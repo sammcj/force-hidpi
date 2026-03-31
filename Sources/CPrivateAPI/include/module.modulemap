@@ -1,0 +1,4 @@
+module CPrivateAPI {
+    header "CGVirtualDisplayPrivate.h"
+    export *
+}

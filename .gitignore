@@ -1,9 +1,9 @@
-build/
+.build/
+.swiftpm/
 *.o
-force-hidpi
 .DS_Store
-.vscode
 *.log
 *.tmp
-*.bak
 *.swp
+*.bak
+.vscode
