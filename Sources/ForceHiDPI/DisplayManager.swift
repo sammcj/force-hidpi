@@ -68,6 +68,11 @@ class DisplayManager {
         // Wait briefly for the virtual display to register, then configure mirror
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { completion(false); return }
+
+            // Set colour space before mirror so the compositor uses the
+            // correct gamut from the first composited frame
+            matchColourProfile(physicalID: target.displayID, virtualID: vdID)
+
             guard configureMirror(source: vdID, target: target.displayID) else {
                 lastError = "Mirror configuration failed"
                 log("error: \(lastError!)")
@@ -171,13 +176,28 @@ class DisplayManager {
         desc.productID = target.productID
         desc.serialNumber = 1
         desc.name = "force-hidpi"
-        desc.sizeInMillimeters = CGSize(width: 698, height: 392)
+        // Use physical display's reported size for accurate DPI / font rendering
+        let physSize = CGDisplayScreenSize(target.displayID)
+        desc.sizeInMillimeters = physSize.width > 0 ? physSize : CGSize(width: 698, height: 392)
         desc.maxPixelsWide = maxPxW
         desc.maxPixelsHigh = maxPxH
-        desc.redPrimary = CGPoint(x: 0.64, y: 0.33)
-        desc.greenPrimary = CGPoint(x: 0.30, y: 0.60)
-        desc.bluePrimary = CGPoint(x: 0.15, y: 0.06)
-        desc.whitePoint = CGPoint(x: 0.3127, y: 0.3290)
+
+        // Match the physical display's colour gamut so the compositor doesn't
+        // clamp wide-gamut (P3) content to a narrower space
+        if let primaries = extractPrimaries(from: target.displayID) {
+            desc.redPrimary = primaries.red
+            desc.greenPrimary = primaries.green
+            desc.bluePrimary = primaries.blue
+            desc.whitePoint = primaries.white
+            log("  Colour primaries: matched to physical display")
+        } else {
+            // Display P3 fallback (most common gamut for Mac-connected displays)
+            desc.redPrimary = CGPoint(x: 0.680, y: 0.320)
+            desc.greenPrimary = CGPoint(x: 0.265, y: 0.690)
+            desc.bluePrimary = CGPoint(x: 0.150, y: 0.060)
+            desc.whitePoint = CGPoint(x: 0.3127, y: 0.3290)
+            log("  Colour primaries: Display P3 (default)")
+        }
         desc.queue = DispatchQueue(label: "com.force-hidpi.vd")
 
         let settings = CGVirtualDisplaySettings()
@@ -260,6 +280,9 @@ class DisplayManager {
         let vdCS = CGDisplayCopyColorSpace(virtualID)
         let physCS = CGDisplayCopyColorSpace(physicalID)
 
+        if let name = vdCS.name as String? { log("  Virtual colour space: \(name)") }
+        if let name = physCS.name as String? { log("  Physical colour space: \(name)") }
+
         let vdICC = vdCS.copyICCData() as Data?
         let physICC = physCS.copyICCData() as Data?
         let match = vdICC != nil && physICC != nil && vdICC == physICC
@@ -278,14 +301,71 @@ class DisplayManager {
             (physSize.width > 0 ? ", \(String(format: "%.0f", Double(physPx.0) / (physSize.width / 25.4))) PPI" : "") + ")")
     }
 
+    // MARK: - ICC profile primaries
+
+    /// Extract CIE xy colour primaries from a display's ICC profile.
+    /// Parses rXYZ/gXYZ/bXYZ/wtpt tags and converts XYZ tristimulus to chromaticity.
+    private func extractPrimaries(from displayID: CGDirectDisplayID)
+        -> (red: CGPoint, green: CGPoint, blue: CGPoint, white: CGPoint)?
+    {
+        guard let iccData = CGDisplayCopyColorSpace(displayID).copyICCData() as Data?,
+              iccData.count > 132 else { return nil }
+
+        let tagCount = iccUInt32(iccData, offset: 128)
+
+        // Build tag offset lookup: signature -> byte offset into profile
+        var tags: [UInt32: Int] = [:]
+        for i in 0..<Int(tagCount) {
+            let base = 132 + i * 12
+            guard base + 12 <= iccData.count else { break }
+            tags[iccUInt32(iccData, offset: base)] = Int(iccUInt32(iccData, offset: base + 4))
+        }
+
+        func xyChromaticity(_ sig: UInt32) -> CGPoint? {
+            guard let offset = tags[sig], offset + 20 <= iccData.count else { return nil }
+            let base = offset + 8  // skip 'XYZ ' type signature + reserved bytes
+            let x = iccS15Fixed16(iccData, offset: base)
+            let y = iccS15Fixed16(iccData, offset: base + 4)
+            let z = iccS15Fixed16(iccData, offset: base + 8)
+            let sum = x + y + z
+            guard sum > 0 else { return nil }
+            return CGPoint(x: x / sum, y: y / sum)
+        }
+
+        guard let r = xyChromaticity(0x7258595A),  // rXYZ
+              let g = xyChromaticity(0x6758595A),  // gXYZ
+              let b = xyChromaticity(0x6258595A),  // bXYZ
+              let w = xyChromaticity(0x77747074)   // wtpt
+        else { return nil }
+
+        return (r, g, b, w)
+    }
+
+    private func iccUInt32(_ data: Data, offset: Int) -> UInt32 {
+        UInt32(data[offset]) << 24 |
+        UInt32(data[offset + 1]) << 16 |
+        UInt32(data[offset + 2]) << 8 |
+        UInt32(data[offset + 3])
+    }
+
+    private func iccS15Fixed16(_ data: Data, offset: Int) -> Double {
+        Double(Int32(bitPattern: iccUInt32(data, offset: offset))) / 65536.0
+    }
+
     // MARK: - PQ gamma correction
 
     private func applyPQGammaCorrection(displayID: CGDirectDisplayID) {
         let size: UInt32 = 256
         var table = [CGGammaValue](repeating: 0, count: Int(size))
 
+        // ST 2084 (PQ) EOTF constants
         let m1 = 0.1593017578125, m2 = 78.84375
         let c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875
+
+        // The PQ EOTF outputs linear light in [0,1] representing [0,10000] nits.
+        // Scale so SDR reference white (100 nits = 0.01 linear) maps to 1.0,
+        // then apply 2.2 gamma encoding for the physical display.
+        let sdrScale = 10000.0 / 100.0
 
         for i in 0..<Int(size) {
             let pq = Double(i) / Double(size - 1)
@@ -295,8 +375,8 @@ class DisplayManager {
             if den > 0 && t > c1 {
                 linear = pow((t - c1) / den, 1.0 / m1)
             }
-            linear = min(max(linear * 100.0, 0), 1)
-            table[i] = CGGammaValue(pow(linear, 1.0 / 2.2))
+            let mapped = min(max(linear * sdrScale, 0), 1)
+            table[i] = CGGammaValue(pow(mapped, 1.0 / 2.2))
         }
 
         CGSetDisplayTransferByTable(displayID, size, table, table, table)

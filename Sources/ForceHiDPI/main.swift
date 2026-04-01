@@ -29,7 +29,7 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let appVersion = "1.1.0"
+    private static let appVersion = "1.2.0"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private var isActive = false
