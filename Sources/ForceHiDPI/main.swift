@@ -91,6 +91,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleDisplayChange() {
+        // Ignore display reconfigurations we triggered ourselves (deactivate/activate cycle).
+        // resetStatusItem during our own cycle crashes AppKit (menu is still on the call stack).
+        guard !isActivating else { return }
+
         if isActive {
             if manager.findTarget() == nil {
                 manager.deactivate()
@@ -274,6 +278,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isActivating else { return }
         hdrMode.toggle()
         if isActive {
+            isActivating = true  // suppress handleDisplayChange before deactivate
             manager.deactivate()
             isActive = false
             activate()
@@ -287,6 +292,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard newScale != scaleFactor else { return }
         scaleFactor = newScale
         if isActive {
+            isActivating = true  // suppress handleDisplayChange before deactivate
             manager.deactivate()
             isActive = false
             activate()

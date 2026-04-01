@@ -66,11 +66,13 @@ uninstall:
 	@echo "Uninstalled force-hidpi"
 
 start:
+	@launchctl bootout gui/$$(id -u)/com.force-hidpi 2>/dev/null || true
+	@sleep 0.5
 	launchctl bootstrap gui/$$(id -u) $(LAUNCH_AGENT_DIR)/$(PLIST)
 	@echo "Started"
 
 stop:
-	launchctl bootout gui/$$(id -u)/com.force-hidpi
+	launchctl bootout gui/$$(id -u)/com.force-hidpi 2>/dev/null || true
 	@echo "Stopped"
 
 logs:
