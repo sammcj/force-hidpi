@@ -28,10 +28,8 @@ app.run()
 
 // MARK: - AppDelegate
 
-private let prefs = UserDefaults(suiteName: "com.force-hidpi")!
-
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let appVersion = "1.0.1"
+    private static let appVersion = "1.1.0"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private var isActive = false
@@ -39,18 +37,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     fileprivate var retainedSources: [Any] = []
     private var displayObserver: Any?
     private var profileObserver: Any?
+    /// Timestamp when activation last completed, used to ignore aftershock
+    /// display-change notifications from our own reconfiguration.
+    private var activationCompletedAt: Date?
+
+    // Settings stored as a plist file (UserDefaults suiteName writes
+    // silently fail on modern macOS for non-bundled executables).
+    private static let settingsURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Preferences/com.force-hidpi.plist")
+
+    private var _hdrMode: Bool = true
+    private var _scaleFactor: Double = 2.0
+
+    private static let scaleOptions: [Double] = [2.0, 2.25, 2.5, 3.0, 3.5, 4.0]
 
     private var hdrMode: Bool {
-        get { prefs.object(forKey: "hdrMode") as? Bool ?? true }
-        set { prefs.set(newValue, forKey: "hdrMode") }
+        get { _hdrMode }
+        set { _hdrMode = newValue; savePrefs() }
     }
 
-    private var scaleFactor: UInt32 {
-        get { UInt32(prefs.object(forKey: "scaleFactor") as? Int ?? 2) }
-        set { prefs.set(Int(newValue), forKey: "scaleFactor") }
+    private var scaleFactor: Double {
+        get { _scaleFactor }
+        set { _scaleFactor = newValue; savePrefs() }
+    }
+
+    private func loadPrefs() {
+        guard let data = try? Data(contentsOf: Self.settingsURL),
+              let dict = try? PropertyListSerialization.propertyList(
+                  from: data, format: nil) as? [String: Any]
+        else { return }
+        if let v = dict["hdrMode"] as? Bool { _hdrMode = v }
+        if let v = dict["scaleFactor"] as? Double, v >= 2.0 { _scaleFactor = v }
+    }
+
+    private func savePrefs() {
+        let dict: [String: Any] = ["hdrMode": _hdrMode, "scaleFactor": _scaleFactor]
+        guard let data = try? PropertyListSerialization.data(
+            fromPropertyList: dict, format: .xml, options: 0)
+        else { return }
+        try? data.write(to: Self.settingsURL, options: .atomic)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        loadPrefs()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setStatusIcon(.inactive)
         rebuildMenu()
@@ -95,7 +124,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // resetStatusItem during our own cycle crashes AppKit (menu is still on the call stack).
         guard !isActivating else { return }
 
-        if isActive {
+        // Ignore aftershock notifications from our own reconfiguration for 2s
+        // after activation completes. findTarget() can return nil transiently
+        // during the display system settling, which would cause a spurious deactivate.
+        let inCooldown = activationCompletedAt.map { Date().timeIntervalSince($0) < 2.0 } ?? false
+        if isActive && !inCooldown {
             if manager.findTarget() == nil {
                 manager.deactivate()
                 isActive = false
@@ -164,7 +197,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Activating...", action: nil, keyEquivalent: "").isEnabled = false
         } else if isActive {
             let hdrStr = hdrMode ? " 16-bit" : ""
-            let scaleStr = scaleFactor > 2 ? " \(scaleFactor)x" : ""
+            let scaleStr = scaleFactor > 2.0 ? " \(Self.formatScale(scaleFactor))" : ""
             if let t = manager.targetDisplay {
                 menu.addItem(withTitle: "HiDPI Active (\(t.width)x\(t.height)\(hdrStr)\(scaleStr))",
                              action: nil, keyEquivalent: "").isEnabled = false
@@ -196,13 +229,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(hdr)
 
         // Scale factor submenu
+        // The scale factor is the ratio of render buffer pixels to physical pixels.
+        // Mode (logical) = physical * scale / 2. Backing (render) = mode * 2 = physical * scale.
+        //   2x:  logical 3840x2160, render 7680x4320  (standard HiDPI)
+        //   2.5x: logical 4800x2700, render 9600x5400
+        //   4x:  logical 7680x4320, render 15360x8640
         let scaleMenu = NSMenu()
-        for s: UInt32 in [2, 3, 4] {
-            let label = s == 2 ? "2x (standard)" : "\(s)x (supersample)"
+        let currentScale = scaleFactor
+        let physW = manager.targetDisplay.map { Double($0.width) } ?? 3840.0
+        let physH = manager.targetDisplay.map { Double($0.height) } ?? 2160.0
+        for s in Self.scaleOptions {
+            let logW = Int((physW * s / 2.0).rounded())
+            let logH = Int((physH * s / 2.0).rounded())
+            let tag = Self.formatScale(s)
+            let label = s == 2.0
+                ? "\(tag) \(logW)x\(logH) (standard)"
+                : "\(tag) \(logW)x\(logH)"
             let item = NSMenuItem(title: label, action: #selector(setScale(_:)), keyEquivalent: "")
             item.target = self
-            item.tag = Int(s)
-            item.state = scaleFactor == s ? .on : .off
+            item.tag = Int(s * 100)  // encode as int: 2.25 -> 225
+            item.state = abs(currentScale - s) < 0.01 ? .on : .off
             item.isEnabled = !isActivating
             scaleMenu.addItem(item)
         }
@@ -259,6 +305,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.isActivating = false
             self.isActive = success
+            self.activationCompletedAt = Date()
             self.setStatusIcon(success ? .active : .inactive)
             self.rebuildMenu()
         }
@@ -277,27 +324,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleHDR() {
         guard !isActivating else { return }
         hdrMode.toggle()
-        if isActive {
-            isActivating = true  // suppress handleDisplayChange before deactivate
-            manager.deactivate()
-            isActive = false
-            activate()
-        }
-        rebuildMenu()
+        if isActive { reactivate() } else { rebuildMenu() }
     }
 
     @objc private func setScale(_ sender: NSMenuItem) {
         guard !isActivating else { return }
-        let newScale = UInt32(sender.tag)
-        guard newScale != scaleFactor else { return }
+        let newScale = Double(sender.tag) / 100.0
+        guard abs(newScale - scaleFactor) > 0.01 else { return }
+        print("setScale: \(Self.formatScale(scaleFactor)) -> \(Self.formatScale(newScale))")
         scaleFactor = newScale
-        if isActive {
-            isActivating = true  // suppress handleDisplayChange before deactivate
-            manager.deactivate()
-            isActive = false
-            activate()
-        }
+        if isActive { reactivate() } else { rebuildMenu() }
+    }
+
+    /// Format a scale factor for display, dropping unnecessary trailing zeros.
+    private static func formatScale(_ s: Double) -> String {
+        s.truncatingRemainder(dividingBy: 1) == 0
+            ? "\(Int(s))x"
+            : "\(String(format: "%g", s))x"
+    }
+
+    /// Tear down and re-establish the virtual display with current settings.
+    /// Inserts a delay between deactivate and activate so the display system
+    /// has time to settle (findTarget relies on accurate display enumeration).
+    private func reactivate() {
+        isActivating = true
+        setStatusIcon(.activating)
         rebuildMenu()
+        manager.deactivate()
+        isActive = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.activate()
+        }
     }
 
     @objc private func setFontSmoothing(_ sender: NSMenuItem) {

@@ -15,6 +15,7 @@ macOS menu bar app (Swift/SwiftPM) that creates a CGVirtualDisplay and hardware-
 Version is defined in `main.swift` as `appVersion`. Uses semantic versioning (major.minor.patch).
 
 When to increment:
+
 - **Patch** (1.0.x): Bug fixes, minor tweaks, no behaviour change
 - **Minor** (1.x.0): New features, new menu options, non-breaking changes
 - **Major** (x.0.0): Breaking changes, API changes to CGVirtualDisplay usage, major rewrites
@@ -36,7 +37,7 @@ make install      # install + start (restarts if already running)
 - The virtual display mode uses `transferFunction: 1` (PQ/ST 2084) for 16-bit compositing. A PQ-to-SDR gamma correction table is applied via `CGSetDisplayTransferByTable`
 - Mirror config uses `.forSession` (not `.permanently`) so a crash doesn't leave displays stuck
 - Duplicate instance prevention uses `flock` on `/tmp/force-hidpi.lock`
-- Settings persist via `UserDefaults(suiteName: "com.force-hidpi")`
+- Settings persist via a plist file at `~/Library/Preferences/com.force-hidpi.plist` (UserDefaults suiteName silently fails for non-bundled executables on modern macOS)
 - The "Start at Login" toggle generates a LaunchAgent plist pointing to the current binary path (not hardcoded)
 
 ## General guidelines

@@ -20,6 +20,19 @@ For the full technical analysis including DCP firmware disassembly, see the [blo
 
 The hardware mirror path bypasses the `verify_downscaling` budget check that blocks direct 7680-wide backing stores on pipe 0.
 
+### Scale factor
+
+The default 2x creates a 7680x4320 render buffer for the 3840x2160 logical resolution. Higher scale factors increase the render buffer further for super-sampled output with more screen real estate:
+
+| Scale | Logical   | Render buffer | Notes                    |
+| ----- | --------- | ------------- | ------------------------ |
+| 2x    | 3840x2160 | 7680x4320     | Standard HiDPI (default) |
+| 2.25x | 4320x2430 | 8640x4860     |                          |
+| 2.5x  | 4800x2700 | 9600x5400     |                          |
+| 3x    | 5760x3240 | 11520x6480    |                          |
+| 3.5x  | 6720x3780 | 13440x7560    |                          |
+| 4x    | 7680x4320 | 15360x8640    |                          |
+
 ### Quality features
 
 - **16-bit compositing** (default): Uses PQ (ST 2084) EOTF for 16-bit/64bpp compositing with a PQ-to-SDR gamma correction table applied via `CGSetDisplayTransferByTable`. Toggleable from the menu bar.

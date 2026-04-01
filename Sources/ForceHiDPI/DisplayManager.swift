@@ -41,7 +41,7 @@ class DisplayManager {
 
     /// Activate HiDPI. Creates virtual display immediately, then calls completion
     /// on the main queue after mirror setup (non-blocking).
-    func activate(hdrMode: Bool, scaleFactor: UInt32 = 2, completion: @escaping (Bool) -> Void) {
+    func activate(hdrMode: Bool, scaleFactor: Double = 2.0, completion: @escaping (Bool) -> Void) {
         lastError = nil
 
         guard let target = findTarget() else {
@@ -140,19 +140,30 @@ class DisplayManager {
 
     // MARK: - Virtual display
 
-    private func createVirtualDisplay(target: DisplayTarget, hdrMode: Bool, scaleFactor: UInt32 = 2) -> CGVirtualDisplay? {
-        let pointW = target.width
-        let pointH = target.height
-        let maxPxW = pointW * scaleFactor
-        let maxPxH = pointH * scaleFactor
+    private func createVirtualDisplay(target: DisplayTarget, hdrMode: Bool, scaleFactor: Double = 2.0) -> CGVirtualDisplay? {
+        // Mode dimensions determine the virtual display's pixel resolution.
+        // With hiDPI=1 the compositor offers a 2x mode (half the mode pixels
+        // as logical points). For super-sampling (scaleFactor > 2) we increase
+        // the mode so the compositor renders at a higher resolution than the
+        // physical display, and the mirror hardware-downscales to native.
+        //
+        //   scaleFactor 2.0:  mode 3840x2160 -> 1920x1080@2x -> 1:1 to physical
+        //   scaleFactor 2.5:  mode 4800x2700 -> 2400x1350@2x -> 1.25:1 downscale
+        //   scaleFactor 4.0:  mode 7680x4320 -> 3840x2160@2x -> 2:1 downscale
+        let modeW = UInt32((Double(target.width) * scaleFactor / 2.0).rounded())
+        let modeH = UInt32((Double(target.height) * scaleFactor / 2.0).rounded())
+        let maxPxW = modeW * 2  // 2x backing for HiDPI
+        let maxPxH = modeH * 2
         let hz = target.refreshRate > 0 ? target.refreshRate : 60.0
+
+        log("  Virtual display mode: \(modeW)x\(modeH) (maxPx \(maxPxW)x\(maxPxH), scale \(scaleFactor)x)")
 
         let mode: CGVirtualDisplayMode
         if hdrMode {
-            mode = CGVirtualDisplayMode(width: pointW, height: pointH,
+            mode = CGVirtualDisplayMode(width: modeW, height: modeH,
                                         refreshRate: hz, transferFunction: 1)
         } else {
-            mode = CGVirtualDisplayMode(width: pointW, height: pointH, refreshRate: hz)
+            mode = CGVirtualDisplayMode(width: modeW, height: modeH, refreshRate: hz)
         }
 
         let desc = CGVirtualDisplayDescriptor()
