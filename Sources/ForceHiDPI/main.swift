@@ -132,6 +132,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if manager.findTarget() == nil {
                 manager.deactivate()
                 isActive = false
+            } else {
+                // Display sleep/wake can reset gamma tables and colour profiles.
+                // Re-apply so PQ correction and ICC matching survive wake cycles.
+                manager.rematchColourProfile()
             }
         }
         // Recreate the status item - display reconfiguration invalidates

@@ -38,11 +38,13 @@ class DisplayManager {
     private var virtualDisplay: CGVirtualDisplay?
     private(set) var targetDisplay: DisplayTarget?
     private(set) var lastError: String?
+    private var hdrModeActive = false
 
     /// Activate HiDPI. Creates virtual display immediately, then calls completion
     /// on the main queue after mirror setup (non-blocking).
     func activate(hdrMode: Bool, scaleFactor: Double = 2.0, completion: @escaping (Bool) -> Void) {
         lastError = nil
+        hdrModeActive = hdrMode
 
         guard let target = findTarget() else {
             lastError = "No 4K external display found"
@@ -101,7 +103,16 @@ class DisplayManager {
 
     func rematchColourProfile() {
         guard let target = targetDisplay, let vd = virtualDisplay else { return }
-        matchColourProfile(physicalID: target.displayID, virtualID: CGDirectDisplayID(vd.displayID))
+        let vdID = CGDirectDisplayID(vd.displayID)
+        matchColourProfile(physicalID: target.displayID, virtualID: vdID)
+
+        // Night Shift, True Tone, and display sleep/wake can overwrite the
+        // gamma tables via CGSetDisplayTransferByTable. Re-apply PQ correction
+        // so the EOTF decode stays intact.
+        if hdrModeActive {
+            applyPQGammaCorrection(displayID: vdID)
+            log("  Re-applied PQ gamma correction after colour change")
+        }
     }
 
     func deactivate() {
@@ -110,6 +121,7 @@ class DisplayManager {
         }
         targetDisplay = nil
         lastError = nil
+        hdrModeActive = false
         // Release the virtual display last so the mirror config transaction
         // commits before the backing display object is deallocated.
         virtualDisplay = nil
