@@ -84,7 +84,7 @@ class DisplayManager {
             }
 
             if hdrMode {
-                log("  HDR mode: 16-bit compositing with PQ gamma correction")
+                log("  HDR mode: 16-bit compositor pipeline, PQ gamma correction to 10-bit output")
                 applyPQGammaCorrection(displayID: vdID)
             }
 
@@ -376,7 +376,8 @@ class DisplayManager {
 
         // The PQ EOTF outputs linear light in [0,1] representing [0,10000] nits.
         // Scale so SDR reference white (100 nits = 0.01 linear) maps to 1.0,
-        // then apply 2.2 gamma encoding for the physical display.
+        // then apply 2.2 gamma encoding. The 16-bit compositor precision reduces
+        // banding in the EOTF decode; the physical panel receives 10-bit output.
         let sdrScale = 10000.0 / 100.0
 
         for i in 0..<Int(size) {

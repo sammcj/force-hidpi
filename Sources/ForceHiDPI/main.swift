@@ -225,7 +225,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toggle.isEnabled = !isActivating && (isActive || manager.findTarget() != nil)
         menu.addItem(toggle)
 
-        // 16-bit compositing
+        // 16-bit compositor pipeline (physical panel output remains 10-bit)
         let hdr = NSMenuItem(title: "16-bit Compositing", action: #selector(toggleHDR), keyEquivalent: "")
         hdr.target = self
         hdr.state = hdrMode ? .on : .off
