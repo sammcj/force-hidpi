@@ -40,6 +40,18 @@ make install      # install + start (restarts if already running)
 - Settings persist via a plist file at `~/Library/Preferences/com.force-hidpi.plist` (UserDefaults suiteName silently fails for non-bundled executables on modern macOS)
 - The "Start at Login" toggle generates a LaunchAgent plist pointing to the current binary path (not hardcoded)
 
+## Dangerous APIs / what not to do
+
+Hard-won lessons from SkyLight spelunking. Do not repeat these.
+
+- **Never call `SLSConfigureDisplayIndependentOutput`.** Despite its name suggesting a runtime-only config call, it writes an `IndependentOutput: true` flag into `~/Library/Preferences/ByHost/com.apple.windowserver.displays.<UUID>.plist` that persists across reboots, logouts, and monitor power-cycles. Once set, affected displays refuse to participate in a hardware mirror set — they go black and disappear from device enumeration. There's no documented API to un-set it. Recovery requires editing the WindowServer plist by hand (walk `DisplaySets.Configs[*].DisplayConfig[*]` and delete the `IndependentOutput` key) and logging out. `.forSession` scope does NOT protect you here.
+
+- **Do not reposition multiple displays in the same transaction that establishes a mirror set.** Specifically, calling `CGConfigureDisplayOrigin` on both the main-anchor display AND the mirror source inside one `CGBeginDisplayConfiguration`/`CGCompleteDisplayConfiguration` transaction has caused the entire mirror set to silently drop off the online display list on macOS 26.4, even when the individual origin values are valid. If you need to change origins, do it in a separate transaction AFTER the mirror is established.
+
+- **NotificationCenter.app checks `CGDisplayIsInMirrorSet(CGMainDisplayID())` directly** to decide whether to suppress notification banners when mirroring is active. The check lives in NotificationCenter.app itself, not in DoNotDisturb/Focus frameworks. The `turnOnDNDWhenMirroring` preference gates the behaviour, and users can disable it manually via Focus → Do Not Disturb → Options → "When mirroring or sharing the display". There is no clean programmatic workaround: the SkyLight mirror-detection query functions read state the system sets atomically when the mirror transaction completes, and attempts to spoof or override that state (via `SLSConfigureDisplayIndependentOutput`, `SLSSetMagicMirrorProperties`, etc.) are either dead ends or actively destructive.
+
+- **The `SLS*` mirror-manipulation family is untrusted territory.** `SLSSetMagicMirrorProperties`, `SLSSetPresentationDisplay`, and similar look attractive but have unknown/undocumented side-effects and may write to persistent storage. Before calling ANY of them, disassemble the function prologue (see the `ctx_execute` workflow in session history) and verify it's read-only or session-scoped.
+
 ## General guidelines
 
 - Avoid over-complicating and over-engineering the codebase, there is elegance in simplicity
