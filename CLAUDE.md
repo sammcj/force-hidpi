@@ -6,7 +6,11 @@ macOS menu bar app (Swift/SwiftPM) that creates a CGVirtualDisplay and hardware-
 
 - `Sources/ForceHiDPI/main.swift` - App entry point, AppDelegate, NSStatusItem menu
 - `Sources/ForceHiDPI/DisplayManager.swift` - Display enumeration, virtual display lifecycle, mirror config, PQ gamma, colour profile matching, SkyLight dlopen bridge
-- `Sources/CPrivateAPI/` - ObjC bridging module for CGVirtualDisplay private API declarations
+- `Sources/ForceHiDPI/BrightnessController.swift` - DDC/CI brightness control over IOAVService (ported from MonitorControl's Arm64DDC). Resolves one `IOAVService` for the mirror-target physical display; coalesces rapid slider writes on a background queue
+- `Sources/ForceHiDPI/HotKey.swift` - Carbon `RegisterEventHotKey` wrapper for global shortcuts without requiring Accessibility permission
+- `Sources/ForceHiDPI/ShortcutWindow.swift` - Preferences window and shortcut-recorder view for rebinding brightness hotkeys
+- `Sources/ForceHiDPI/BrightnessSliderView.swift` - Custom NSView hosting the brightness slider inside an NSMenuItem
+- `Sources/CPrivateAPI/` - ObjC bridging module for CGVirtualDisplay + IOAVService + CoreDisplay private API declarations
 - `Makefile` - build/install/uninstall targets
 - `com.force-hidpi.plist` - LaunchAgent template (binary path substituted at install time)
 
@@ -39,6 +43,9 @@ make install      # install + start (restarts if already running)
 - Duplicate instance prevention uses `flock` on `/tmp/force-hidpi.lock`
 - Settings persist via a plist file at `~/Library/Preferences/com.force-hidpi.plist` (UserDefaults suiteName silently fails for non-bundled executables on modern macOS)
 - The "Start at Login" toggle generates a LaunchAgent plist pointing to the current binary path (not hardcoded)
+- Brightness control uses **DDC/CI over `IOAVService`** (Apple-Silicon replacement for `IOFramebufferService`). `BrightnessController.resolve(displayID:)` walks the IORegistry for `AppleCLCD2`/`IOMobileFramebufferShim` + `DCPAVServiceProxy` pairs and scores matches against `CoreDisplay_DisplayCreateInfoDictionary`. The matched service is cached and re-resolved on display reconfiguration. Writes are dispatched on a background queue and coalesce to the latest pending value, so slider drags never queue more than one write at a time
+- Global hotkeys use Carbon `RegisterEventHotKey`, **not** `NSEvent.addGlobalMonitorForEvents` — the Carbon path does not require the Accessibility permission and dispatches in-process via `InstallEventHandler` on the event dispatcher target
+- Carbon modifier flags (`cmdKey`, `optionKey`, `controlKey`, `shiftKey`) are distinct from Cocoa `NSEvent.ModifierFlags`; `HotKey.Combo` bridges between them. Don't pass Cocoa flags to `RegisterEventHotKey` or vice-versa
 
 ## Dangerous APIs / what not to do
 

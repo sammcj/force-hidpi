@@ -3,6 +3,17 @@
 // Used by DisplayLink and other hardware vendors (semi-public, stable API).
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <IOKit/IOKitLib.h>
+
+// IOAVService - private IOKit API for DDC/CI over I2C on Apple Silicon.
+// Replaces the Intel-era IOFramebufferService path. Resolved by the dynamic
+// linker against the IOKit framework; no dlopen required.
+typedef CFTypeRef IOAVService;
+extern IOAVService _Nullable IOAVServiceCreateWithService(CFAllocatorRef _Nullable allocator, io_service_t service);
+extern IOReturn IOAVServiceWriteI2C(IOAVService service, uint32_t chipAddress, uint32_t dataAddress, void *inputBuffer, uint32_t inputBufferSize);
+
+// CoreDisplay helpers used to correlate a CGDirectDisplayID with an IORegistry entry.
+extern CFDictionaryRef _Nullable CoreDisplay_DisplayCreateInfoDictionary(CGDirectDisplayID display);
 
 @interface CGVirtualDisplayMode : NSObject
 - (instancetype)initWithWidth:(unsigned int)w height:(unsigned int)h

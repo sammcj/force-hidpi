@@ -15,7 +15,9 @@ let package = Package(
       dependencies: ["CPrivateAPI"],
       path: "Sources/ForceHiDPI",
       linkerSettings: [
-        .linkedFramework("IOKit")
+        .linkedFramework("IOKit"),
+        .linkedFramework("CoreDisplay"),
+        .linkedFramework("Carbon")
       ]
     ),
   ]

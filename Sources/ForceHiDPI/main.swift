@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 // Prevent duplicate instances via file lock
 let lockPath = "/tmp/force-hidpi.lock"
@@ -29,9 +30,13 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let appVersion = "1.2.0"
+    fileprivate static let appVersion = "1.3.0"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
+    private let brightness = BrightnessController()
+    private var brightnessUpHotKey: HotKey?
+    private var brightnessDownHotKey: HotKey?
+    private var shortcutWindowController: ShortcutWindowController?
     private var isActive = false
     private var isActivating = false
     fileprivate var retainedSources: [Any] = []
@@ -46,8 +51,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let settingsURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Preferences/com.force-hidpi.plist")
 
+    /// Brightness step applied per hotkey press (fraction of full range).
+    private static let brightnessStep: Float = 0.20
+
+    /// Default hotkeys: ⌃⌘PageUp / ⌃⌘PageDown
+    private static let defaultBrightnessUp = HotKey.Combo(
+        keyCode: UInt32(kVK_PageUp),
+        carbonModifiers: UInt32(controlKey) | UInt32(cmdKey)
+    )
+    private static let defaultBrightnessDown = HotKey.Combo(
+        keyCode: UInt32(kVK_PageDown),
+        carbonModifiers: UInt32(controlKey) | UInt32(cmdKey)
+    )
+
     private var _hdrMode: Bool = true
     private var _scaleFactor: Double = 2.0
+    private var _brightness: Float = 1.0
+    private var pendingSave: DispatchWorkItem?
+    private var _brightnessUpCombo: HotKey.Combo = defaultBrightnessUp
+    private var _brightnessDownCombo: HotKey.Combo = defaultBrightnessDown
 
     private static let scaleOptions: [Double] = [2.0, 2.25, 2.5, 3.0, 3.5, 4.0]
 
@@ -61,6 +83,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         set { _scaleFactor = newValue; savePrefs() }
     }
 
+    private var brightnessLevel: Float {
+        get { _brightness }
+        set { _brightness = max(0, min(1, newValue)); savePrefs() }
+    }
+
+    var brightnessUpCombo: HotKey.Combo {
+        get { _brightnessUpCombo }
+        set { _brightnessUpCombo = newValue; savePrefs(); registerHotKeys() }
+    }
+
+    var brightnessDownCombo: HotKey.Combo {
+        get { _brightnessDownCombo }
+        set { _brightnessDownCombo = newValue; savePrefs(); registerHotKeys() }
+    }
+
     private func loadPrefs() {
         guard let data = try? Data(contentsOf: Self.settingsURL),
               let dict = try? PropertyListSerialization.propertyList(
@@ -68,10 +105,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         else { return }
         if let v = dict["hdrMode"] as? Bool { _hdrMode = v }
         if let v = dict["scaleFactor"] as? Double, v >= 2.0 { _scaleFactor = v }
+        if let v = dict["brightness"] as? Double { _brightness = Float(max(0, min(1, v))) }
+        if let up = dict["brightnessUp"] as? [String: Any],
+           let keyCode = up["keyCode"] as? Int,
+           let mods = up["modifiers"] as? Int {
+            _brightnessUpCombo = HotKey.Combo(keyCode: UInt32(keyCode),
+                                              carbonModifiers: UInt32(mods))
+        }
+        if let down = dict["brightnessDown"] as? [String: Any],
+           let keyCode = down["keyCode"] as? Int,
+           let mods = down["modifiers"] as? Int {
+            _brightnessDownCombo = HotKey.Combo(keyCode: UInt32(keyCode),
+                                                carbonModifiers: UInt32(mods))
+        }
     }
 
     private func savePrefs() {
-        let dict: [String: Any] = ["hdrMode": _hdrMode, "scaleFactor": _scaleFactor]
+        let dict: [String: Any] = [
+            "hdrMode": _hdrMode,
+            "scaleFactor": _scaleFactor,
+            "brightness": Double(_brightness),
+            "brightnessUp": [
+                "keyCode": Int(_brightnessUpCombo.keyCode),
+                "modifiers": Int(_brightnessUpCombo.modifiers),
+            ],
+            "brightnessDown": [
+                "keyCode": Int(_brightnessDownCombo.keyCode),
+                "modifiers": Int(_brightnessDownCombo.modifiers),
+            ],
+        ]
         guard let data = try? PropertyListSerialization.data(
             fromPropertyList: dict, format: .xml, options: 0)
         else { return }
@@ -80,6 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         loadPrefs()
+        registerHotKeys()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setStatusIcon(.inactive)
         rebuildMenu()
@@ -131,11 +194,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if isActive && !inCooldown {
             if manager.findTarget() == nil {
                 manager.deactivate()
+                brightness.invalidate()
                 isActive = false
             } else {
                 // Display sleep/wake can reset gamma tables and colour profiles.
                 // Re-apply so PQ correction and ICC matching survive wake cycles.
                 manager.rematchColourProfile()
+                // IORegistry paths can shuffle across sleep/wake on some docks,
+                // so re-resolve the IOAVService for the (possibly new) target.
+                if let target = manager.targetDisplay {
+                    brightness.invalidate()
+                    _ = brightness.resolve(displayID: target.displayID)
+                }
             }
         }
         // Recreate the status item - display reconfiguration invalidates
@@ -232,6 +302,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hdr.isEnabled = !isActivating
         menu.addItem(hdr)
 
+        // Brightness slider (only shown when the DDC service has been matched)
+        if isActive && brightness.isAvailable {
+            menu.addItem(.separator())
+            let header = NSMenuItem(title: "Brightness", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            let sliderItem = NSMenuItem()
+            let view = BrightnessSliderView(initial: _brightness) { [weak self] value in
+                self?.handleBrightnessSlider(value)
+            }
+            sliderItem.view = view
+            menu.addItem(sliderItem)
+
+            let shortcutsTitle = "Brightness Shortcuts: \(brightnessDownCombo.displayString)  \(brightnessUpCombo.displayString)"
+            let shortcutsItem = NSMenuItem(title: shortcutsTitle,
+                                           action: #selector(openShortcuts),
+                                           keyEquivalent: "")
+            shortcutsItem.target = self
+            menu.addItem(shortcutsItem)
+            menu.addItem(.separator())
+        }
+
         // Scale factor submenu
         // The scale factor is the ratio of render buffer pixels to physical pixels.
         // Mode (logical) = physical * scale / 2. Backing (render) = mode * 2 = physical * scale.
@@ -310,6 +402,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.isActivating = false
             self.isActive = success
             self.activationCompletedAt = Date()
+            if success, let target = self.manager.targetDisplay {
+                if self.brightness.resolve(displayID: target.displayID) {
+                    // Restore the last known brightness value to the display so
+                    // it matches the slider's initial position.
+                    self.brightness.setBrightness(self._brightness)
+                }
+            } else {
+                self.brightness.invalidate()
+            }
             self.setStatusIcon(success ? .active : .inactive)
             self.rebuildMenu()
         }
@@ -318,6 +419,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleActive() {
         if isActive {
             manager.deactivate()
+            brightness.invalidate()
             isActive = false
             // resetStatusItem will be called by handleDisplayChange notification
         } else {
@@ -359,6 +461,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             self?.activate()
         }
+    }
+
+    // MARK: - Brightness
+
+    private func handleBrightnessSlider(_ value: Float) {
+        _brightness = max(0, min(1, value))
+        brightness.setBrightness(_brightness)
+        schedulePrefsSave()
+    }
+
+    /// Coalesce plist writes so a slider drag at 60Hz produces one save, not
+    /// sixty. 300ms matches the feel of a user "settling" on a value.
+    private func schedulePrefsSave() {
+        pendingSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.savePrefs() }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func stepBrightness(by delta: Float) {
+        guard brightness.isAvailable else { return }
+        let new = max(0, min(1, _brightness + delta))
+        guard new != _brightness else { return }
+        _brightness = new
+        brightness.setBrightness(new)
+        savePrefs()
+        // Reflect the change in any open menu slider immediately.
+        if let menu = statusItem?.menu {
+            for item in menu.items {
+                if let view = item.view as? BrightnessSliderView {
+                    view.setValue(new)
+                    break
+                }
+            }
+        }
+    }
+
+    func registerHotKeys() {
+        brightnessUpHotKey = HotKey(combo: _brightnessUpCombo) { [weak self] in
+            self?.stepBrightness(by: Self.brightnessStep)
+        }
+        brightnessDownHotKey = HotKey(combo: _brightnessDownCombo) { [weak self] in
+            self?.stepBrightness(by: -Self.brightnessStep)
+        }
+    }
+
+    @objc private func openShortcuts() {
+        if shortcutWindowController == nil {
+            shortcutWindowController = ShortcutWindowController(delegate: self)
+        }
+        shortcutWindowController?.show()
     }
 
     @objc private func setFontSmoothing(_ sender: NSMenuItem) {
