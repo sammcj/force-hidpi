@@ -30,7 +30,7 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    fileprivate static let appVersion = "1.3.0"
+    fileprivate static let appVersion = "1.4.0"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private let brightness = BrightnessController()
@@ -67,6 +67,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var _hdrMode: Bool = true
     private var _scaleFactor: Double = 2.0
     private var _brightness: Float = 1.0
+    private var _autoManageWithExternal: Bool = true
+    /// Set when the user explicitly clicks Deactivate, so the auto-manager
+    /// never re-activates over a deliberate choice. Cleared on manual Activate.
+    private var manuallyDeactivated = false
     private var pendingSave: DispatchWorkItem?
     private var _brightnessUpCombo: HotKey.Combo = defaultBrightnessUp
     private var _brightnessDownCombo: HotKey.Combo = defaultBrightnessDown
@@ -88,6 +92,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         set { _brightness = max(0, min(1, newValue)); savePrefs() }
     }
 
+    private var autoManageWithExternal: Bool {
+        get { _autoManageWithExternal }
+        set { _autoManageWithExternal = newValue; savePrefs() }
+    }
+
     var brightnessUpCombo: HotKey.Combo {
         get { _brightnessUpCombo }
         set { _brightnessUpCombo = newValue; savePrefs(); registerHotKeys() }
@@ -106,6 +115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let v = dict["hdrMode"] as? Bool { _hdrMode = v }
         if let v = dict["scaleFactor"] as? Double, v >= 2.0 { _scaleFactor = v }
         if let v = dict["brightness"] as? Double { _brightness = Float(max(0, min(1, v))) }
+        if let v = dict["autoManageWithExternal"] as? Bool { _autoManageWithExternal = v }
         if let up = dict["brightnessUp"] as? [String: Any],
            let keyCode = up["keyCode"] as? Int,
            let mods = up["modifiers"] as? Int {
@@ -125,6 +135,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "hdrMode": _hdrMode,
             "scaleFactor": _scaleFactor,
             "brightness": Double(_brightness),
+            "autoManageWithExternal": _autoManageWithExternal,
             "brightnessUp": [
                 "keyCode": Int(_brightnessUpCombo.keyCode),
                 "modifiers": Int(_brightnessUpCombo.modifiers),
@@ -193,9 +204,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let inCooldown = activationCompletedAt.map { Date().timeIntervalSince($0) < 2.0 } ?? false
         if isActive && !inCooldown {
             if manager.findTarget() == nil {
-                manager.deactivate()
-                brightness.invalidate()
-                isActive = false
+                // External display gone. Auto-deactivate so HiDPI doesn't keep
+                // running on the internal panel, unless the user opted out.
+                if autoManageWithExternal {
+                    manager.deactivate()
+                    brightness.invalidate()
+                    isActive = false
+                }
             } else {
                 // Display sleep/wake can reset gamma tables and colour profiles.
                 // Re-apply so PQ correction and ICC matching survive wake cycles.
@@ -207,6 +222,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     _ = brightness.resolve(displayID: target.displayID)
                 }
             }
+        } else if !isActive && !inCooldown && autoManageWithExternal
+                    && !manuallyDeactivated && manager.findTarget() != nil {
+            // External 4K display (re)appeared while inactive. Auto-reactivate,
+            // but never override an explicit user Deactivate. The cooldown guard
+            // stops a failed activation (which calls deactivate, posting another
+            // display-change) from spinning into a retry loop.
+            activate()
         }
         // Recreate the status item - display reconfiguration invalidates
         // the cached screen coordinates and the menu appears in the wrong place
@@ -372,6 +394,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fontItem.submenu = fontMenu
         menu.addItem(fontItem)
 
+        // Auto-activate based on external display presence
+        let autoManage = NSMenuItem(title: "Auto-Activate With External Display",
+                                    action: #selector(toggleAutoManage), keyEquivalent: "")
+        autoManage.target = self
+        autoManage.state = autoManageWithExternal ? .on : .off
+        menu.addItem(autoManage)
+
         // Start at Login
         let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
         loginItem.target = self
@@ -418,13 +447,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleActive() {
         if isActive {
+            manuallyDeactivated = true
             manager.deactivate()
             brightness.invalidate()
             isActive = false
             // resetStatusItem will be called by handleDisplayChange notification
         } else {
+            manuallyDeactivated = false
             activate()
         }
+    }
+
+    @objc private func toggleAutoManage() {
+        autoManageWithExternal.toggle()
+        rebuildMenu()
     }
 
     @objc private func toggleHDR() {
