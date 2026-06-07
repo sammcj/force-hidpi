@@ -135,9 +135,17 @@ class DisplayManager {
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetOnlineDisplayList(count, &ids, &count) == .success else { return nil }
 
+        // Our own virtual display stays online after the physical monitor is
+        // unplugged and matches the same heuristic (non-builtin, >= 3840 wide).
+        // Exclude it so an unplug is correctly seen as "no target", not "still
+        // present" — otherwise auto-deactivate never fires and windows end up
+        // stranded on the invisible virtual display.
+        let virtualID = virtualDisplay.map { CGDirectDisplayID($0.displayID) }
+
         for i in 0..<Int(count) {
             let did = ids[i]
             guard CGDisplayIsBuiltin(did) == 0 else { continue }
+            if let virtualID, did == virtualID { continue }
 
             let w = UInt32(CGDisplayPixelsWide(did))
             let h = UInt32(CGDisplayPixelsHigh(did))

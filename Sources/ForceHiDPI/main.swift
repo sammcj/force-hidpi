@@ -30,7 +30,7 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    fileprivate static let appVersion = "1.4.0"
+    fileprivate static let appVersion = "1.4.1"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private let brightness = BrightnessController()
