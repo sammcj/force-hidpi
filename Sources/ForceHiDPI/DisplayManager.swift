@@ -115,6 +115,57 @@ class DisplayManager {
         }
     }
 
+    /// Re-point the mirror at a physical display that came back under a new
+    /// `CGDirectDisplayID` (dock or port re-enumeration across sleep/wake).
+    ///
+    /// Keeps the virtual display alive deliberately. Recreating it would
+    /// destroy the Mission Control Spaces macOS holds on it and evacuate every
+    /// window onto the built-in panel, which is exactly what the caller's grace
+    /// period exists to avoid. Returns false if the panel is not the one the
+    /// virtual display was built for, or if the mirror could not be
+    /// re-established, leaving the caller to fall back to a full reactivate.
+    func rebind(to target: DisplayTarget) -> Bool {
+        guard let vd = virtualDisplay, let old = targetDisplay else { return false }
+        let vdID = CGDirectDisplayID(vd.displayID)
+
+        // The virtual display's mode, backing store, physical size and colour
+        // primaries were all baked from the old target in createVirtualDisplay.
+        // Anything that doesn't match would mirror at a stale resolution or DPI,
+        // so it needs a real reactivate rather than a re-point. Normalise the
+        // refresh rate the same way createVirtualDisplay does, since a probe
+        // caught mid-settle can report zero.
+        let oldHz = old.refreshRate > 0 ? old.refreshRate : 60.0
+        let newHz = target.refreshRate > 0 ? target.refreshRate : 60.0
+        guard target.width == old.width, target.height == old.height,
+              target.vendorID == old.vendorID, target.productID == old.productID,
+              abs(newHz - oldHz) < 1
+        else {
+            log("Rebind declined: 0x\(String(target.displayID, radix: 16)) is not the panel " +
+                "the virtual display was built for")
+            return false
+        }
+
+        unconfigureMirror(target: old.displayID)
+
+        matchColourProfile(physicalID: target.displayID, virtualID: vdID)
+        guard configureMirror(source: vdID, target: target.displayID) else {
+            // Deliberately not recorded in lastError: the caller retries and
+            // then falls back to a reactivate, and a transient failure here
+            // shouldn't surface in the menu in the meantime.
+            log("error: mirror rebind failed")
+            return false
+        }
+        targetDisplay = target
+
+        if hdrModeActive {
+            applyPQGammaCorrection(displayID: vdID)
+        }
+        matchColourProfile(physicalID: target.displayID, virtualID: vdID)
+
+        log("Rebound mirror 0x\(String(vdID, radix: 16)) -> 0x\(String(target.displayID, radix: 16))")
+        return true
+    }
+
     func deactivate() {
         if let target = targetDisplay {
             unconfigureMirror(target: target.displayID)
@@ -326,8 +377,7 @@ class DisplayManager {
     /// Extract CIE xy colour primaries from a display's ICC profile.
     /// Parses rXYZ/gXYZ/bXYZ/wtpt tags and converts XYZ tristimulus to chromaticity.
     private func extractPrimaries(from displayID: CGDirectDisplayID)
-        -> (red: CGPoint, green: CGPoint, blue: CGPoint, white: CGPoint)?
-    {
+        -> (red: CGPoint, green: CGPoint, blue: CGPoint, white: CGPoint)? {
         guard let iccData = CGDisplayCopyColorSpace(displayID).copyICCData() as Data?,
               iccData.count > 132 else { return nil }
 

@@ -27,10 +27,10 @@ final class HotKey {
         init(keyCode: UInt16, cocoaModifiers: NSEvent.ModifierFlags) {
             self.keyCode = UInt32(keyCode)
             var mods: UInt32 = 0
-            if cocoaModifiers.contains(.command)  { mods |= UInt32(cmdKey) }
-            if cocoaModifiers.contains(.option)   { mods |= UInt32(optionKey) }
-            if cocoaModifiers.contains(.control)  { mods |= UInt32(controlKey) }
-            if cocoaModifiers.contains(.shift)    { mods |= UInt32(shiftKey) }
+            if cocoaModifiers.contains(.command) { mods |= UInt32(cmdKey) }
+            if cocoaModifiers.contains(.option) { mods |= UInt32(optionKey) }
+            if cocoaModifiers.contains(.control) { mods |= UInt32(controlKey) }
+            if cocoaModifiers.contains(.shift) { mods |= UInt32(shiftKey) }
             self.modifiers = mods
         }
     }

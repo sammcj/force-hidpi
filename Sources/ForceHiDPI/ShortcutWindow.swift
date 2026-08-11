@@ -95,7 +95,7 @@ final class ShortcutWindowController: NSWindowController, NSWindowDelegate {
             downRecorder.heightAnchor.constraint(equalToConstant: 24),
 
             resetButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            resetButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            resetButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16)
         ])
     }
 
@@ -146,7 +146,7 @@ final class ShortcutRecorderView: NSView {
         addSubview(label)
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         updateLabel()
     }
@@ -210,9 +210,9 @@ final class ShortcutRecorderView: NSView {
     private static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
         var mods: UInt32 = 0
         if flags.contains(.command) { mods |= UInt32(cmdKey) }
-        if flags.contains(.option)  { mods |= UInt32(optionKey) }
+        if flags.contains(.option) { mods |= UInt32(optionKey) }
         if flags.contains(.control) { mods |= UInt32(controlKey) }
-        if flags.contains(.shift)   { mods |= UInt32(shiftKey) }
+        if flags.contains(.shift) { mods |= UInt32(shiftKey) }
         return mods
     }
 }

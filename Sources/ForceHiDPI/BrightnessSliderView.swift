@@ -63,7 +63,7 @@ final class BrightnessSliderView: NSView {
             valueLabel.leadingAnchor.constraint(equalTo: slider.trailingAnchor, constant: 6),
             valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            valueLabel.widthAnchor.constraint(equalToConstant: 34),
+            valueLabel.widthAnchor.constraint(equalToConstant: 34)
         ])
     }
 

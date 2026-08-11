@@ -289,7 +289,7 @@ final class BrightnessController {
                 (vendorKey, 0),
                 (productKey, 4),
                 (dateKey, 19),
-                (sizeKey, 30),
+                (sizeKey, 30)
             ]
             for candidate in candidates where candidate.key != "0000" {
                 let start = candidate.loc

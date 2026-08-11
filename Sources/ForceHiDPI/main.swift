@@ -30,7 +30,7 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    fileprivate static let appVersion = "1.4.1"
+    fileprivate static let appVersion = "1.4.2"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private let brightness = BrightnessController()
@@ -42,9 +42,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     fileprivate var retainedSources: [Any] = []
     private var displayObserver: Any?
     private var profileObserver: Any?
+    private var powerObservers: [Any] = []
+    private var lockObservers: [Any] = []
     /// Timestamp when activation last completed, used to ignore aftershock
     /// display-change notifications from our own reconfiguration.
     private var activationCompletedAt: Date?
+    /// Timestamp of the last sleep, wake, lock or unlock, used to widen the
+    /// grace period before a vanished panel counts as a real disconnect.
+    private var lastPowerEventAt: Date?
+    /// Start of the current grace period. A power event restarts it.
+    private var targetLossStartedAt: Date?
+    /// When the target was first observed missing, never restarted, so a stream
+    /// of power events can't defer the teardown indefinitely.
+    private var targetLossFirstSeenAt: Date?
+    private var pendingTargetLossProbe: DispatchWorkItem?
+
+    /// How long the target may stay missing before it counts as unplugged.
+    private static let targetLossGrace: TimeInterval = 4.0
+    /// The same, shortly after a wake or unlock, where display re-enumeration
+    /// takes considerably longer.
+    private static let targetLossGraceAfterWake: TimeInterval = 30.0
+    /// How long after a wake or unlock the longer grace applies.
+    private static let wakeWindow: TimeInterval = 120.0
+    /// Gap between re-probes while the target is missing.
+    private static let targetLossProbeInterval: TimeInterval = 1.0
 
     // Settings stored as a plist file (UserDefaults suiteName writes
     // silently fail on modern macOS for non-bundled executables).
@@ -138,12 +159,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "autoManageWithExternal": _autoManageWithExternal,
             "brightnessUp": [
                 "keyCode": Int(_brightnessUpCombo.keyCode),
-                "modifiers": Int(_brightnessUpCombo.modifiers),
+                "modifiers": Int(_brightnessUpCombo.modifiers)
             ],
             "brightnessDown": [
                 "keyCode": Int(_brightnessDownCombo.keyCode),
-                "modifiers": Int(_brightnessDownCombo.modifiers),
-            ],
+                "modifiers": Int(_brightnessDownCombo.modifiers)
+            ]
         ]
         guard let data = try? PropertyListSerialization.data(
             fromPropertyList: dict, format: .xml, options: 0)
@@ -174,6 +195,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             self?.handleProfileChange()
         }
+
+        // Sleep, wake and lock/unlock re-enumerate displays over several
+        // seconds. Record when they happen so a panel missing during that
+        // window is given longer to come back before it counts as unplugged.
+        for name: NSNotification.Name in [
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidSleepNotification,
+            NSWorkspace.screensDidWakeNotification
+        ] {
+            powerObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.handlePowerEvent()
+            })
+        }
+        for name in ["com.apple.screenIsLocked", "com.apple.screenIsUnlocked"] {
+            lockObservers.append(DistributedNotificationCenter.default().addObserver(
+                forName: NSNotification.Name(name), object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.handlePowerEvent()
+            })
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -183,6 +227,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let obs = profileObserver {
             DistributedNotificationCenter.default().removeObserver(obs)
         }
+        for obs in powerObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+        }
+        for obs in lockObservers {
+            DistributedNotificationCenter.default().removeObserver(obs)
+        }
+        cancelTargetLoss()
         manager.deactivate()
     }
 
@@ -203,24 +254,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // during the display system settling, which would cause a spurious deactivate.
         let inCooldown = activationCompletedAt.map { Date().timeIntervalSince($0) < 2.0 } ?? false
         if isActive && !inCooldown {
-            if manager.findTarget() == nil {
-                // External display gone. Auto-deactivate so HiDPI doesn't keep
-                // running on the internal panel, unless the user opted out.
-                if autoManageWithExternal {
-                    manager.deactivate()
-                    brightness.invalidate()
-                    isActive = false
+            if let target = manager.findTarget() {
+                if targetLossStartedAt != nil {
+                    cancelTargetLoss()
+                    recoverTarget(target)
+                } else {
+                    reapplyDisplaySettings()
                 }
             } else {
-                // Display sleep/wake can reset gamma tables and colour profiles.
-                // Re-apply so PQ correction and ICC matching survive wake cycles.
-                manager.rematchColourProfile()
-                // IORegistry paths can shuffle across sleep/wake on some docks,
-                // so re-resolve the IOAVService for the (possibly new) target.
-                if let target = manager.targetDisplay {
-                    brightness.invalidate()
-                    _ = brightness.resolve(displayID: target.displayID)
-                }
+                // External display gone, possibly only for a moment. Start the
+                // grace period rather than tearing down immediately.
+                beginTargetLoss()
             }
         } else if !isActive && !inCooldown && autoManageWithExternal
                     && !manuallyDeactivated && manager.findTarget() != nil {
@@ -233,6 +277,142 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Recreate the status item - display reconfiguration invalidates
         // the cached screen coordinates and the menu appears in the wrong place
         resetStatusItem()
+    }
+
+    /// Sleep, wake, lock and unlock all arm the widened grace period. Sleep and
+    /// lock arm it too because there is no ordering guarantee that the wake
+    /// notification arrives before the display churn it causes.
+    private func handlePowerEvent() {
+        lastPowerEventAt = Date()
+        guard isActive, targetLossStartedAt != nil else { return }
+        if let target = manager.findTarget() {
+            cancelTargetLoss()
+            recoverTarget(target)
+        } else {
+            // Restart the clock from here: it kept running across sleep, and
+            // display re-enumeration only begins once the machine is awake.
+            // `targetLossFirstSeenAt` is left alone so this can't defer the
+            // teardown forever on a genuinely unplugged panel.
+            targetLossStartedAt = Date()
+        }
+    }
+
+    /// The panel is back after a spell of being missing.
+    ///
+    /// It can return under a different `CGDirectDisplayID` (dock or port
+    /// re-enumeration), which leaves the virtual display mirrored to an ID that
+    /// no longer exists. Re-point the mirror in that case; a full reactivate
+    /// would recreate the virtual display and destroy the Spaces this whole
+    /// grace period exists to preserve, so it's only the fallback.
+    private func recoverTarget(_ target: DisplayTarget) {
+        if target.displayID == manager.targetDisplay?.displayID {
+            // Same panel, still active: nothing the menu shows has changed, so
+            // don't rebuild it - a probe can fire while the user has it open.
+            reapplyDisplaySettings()
+        } else if manager.rebind(to: target) {
+            reapplyDisplaySettings()
+        } else {
+            // The panel was enumerated milliseconds ago and the mirror
+            // transaction can fail while it is still settling. Give it one
+            // retry before the reactivate, which destroys the Spaces this
+            // path exists to preserve.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, isActive, !isActivating else { return }
+                if let retry = manager.findTarget(), manager.rebind(to: retry) {
+                    reapplyDisplaySettings()
+                } else {
+                    reactivate()
+                }
+            }
+        }
+    }
+
+    /// Display sleep/wake can reset gamma tables and colour profiles, and
+    /// IORegistry paths shuffle across sleep/wake on some docks, so re-apply
+    /// the profile and re-resolve the IOAVService for the (possibly new) target.
+    private func reapplyDisplaySettings() {
+        manager.rematchColourProfile()
+        guard let target = manager.targetDisplay else { return }
+        brightness.invalidate()
+        _ = brightness.resolve(displayID: target.displayID)
+    }
+
+    // MARK: - Target loss grace period
+
+    /// Note the target display as missing and start re-probing.
+    ///
+    /// Wake, unlock and dock re-enumeration all drop the panel out of
+    /// `CGGetOnlineDisplayList` for several seconds. Deactivating for one of
+    /// those destroys the virtual display, and with it every Space macOS had
+    /// on it - the windows are evacuated onto the built-in panel and fresh
+    /// Spaces are minted when the virtual display returns under a new ID.
+    /// Only a target that stays missing past the grace period is unplugged.
+    private func beginTargetLoss() {
+        guard autoManageWithExternal else { return }
+        if targetLossStartedAt == nil {
+            targetLossStartedAt = Date()
+            targetLossFirstSeenAt = Date()
+            scheduleTargetLossProbe()
+        }
+    }
+
+    private func cancelTargetLoss() {
+        pendingTargetLossProbe?.cancel()
+        pendingTargetLossProbe = nil
+        targetLossStartedAt = nil
+        targetLossFirstSeenAt = nil
+    }
+
+    private func scheduleTargetLossProbe() {
+        pendingTargetLossProbe?.cancel()
+        let probe = DispatchWorkItem { [weak self] in self?.probeTargetLoss() }
+        pendingTargetLossProbe = probe
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.targetLossProbeInterval, execute: probe)
+    }
+
+    private func probeTargetLoss() {
+        pendingTargetLossProbe = nil
+        guard let startedAt = targetLossStartedAt else { return }
+        guard isActive, autoManageWithExternal else {
+            cancelTargetLoss()
+            return
+        }
+
+        if let target = manager.findTarget() {
+            // Panel came back on its own; nothing was ever unplugged.
+            cancelTargetLoss()
+            recoverTarget(target)
+            return
+        }
+
+        let expired = Date().timeIntervalSince(startedAt) >= currentTargetLossGrace()
+        let cappedOut = targetLossFirstSeenAt.map {
+            Date().timeIntervalSince($0) >= Self.wakeWindow
+        } ?? false
+        guard expired || cappedOut else {
+            scheduleTargetLossProbe()
+            return
+        }
+
+        // Really gone. Deactivate so HiDPI doesn't keep running on the internal
+        // panel. isActive drops before the teardown, which posts a screen
+        // parameters change that would otherwise re-enter handleDisplayChange
+        // and start a fresh grace period. That same notification rebuilds the
+        // status item, so only the icon is touched here - the menu is never
+        // swapped out from under a probe firing while the user has it open.
+        cancelTargetLoss()
+        isActive = false
+        manager.deactivate()
+        brightness.invalidate()
+        setStatusIcon(.inactive)
+    }
+
+    private func currentTargetLossGrace() -> TimeInterval {
+        guard let event = lastPowerEventAt,
+              Date().timeIntervalSince(event) < Self.wakeWindow
+        else { return Self.targetLossGrace }
+        return Self.targetLossGraceAfterWake
     }
 
     private func resetStatusItem() {
@@ -423,6 +603,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     private func activate() {
+        cancelTargetLoss()
         isActivating = true
         setStatusIcon(.activating)
         rebuildMenu()
@@ -448,6 +629,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleActive() {
         if isActive {
             manuallyDeactivated = true
+            cancelTargetLoss()
             manager.deactivate()
             brightness.invalidate()
             isActive = false
@@ -489,6 +671,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Inserts a delay between deactivate and activate so the display system
     /// has time to settle (findTarget relies on accurate display enumeration).
     private func reactivate() {
+        cancelTargetLoss()
         isActivating = true
         setStatusIcon(.activating)
         rebuildMenu()
