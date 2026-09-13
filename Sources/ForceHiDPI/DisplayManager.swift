@@ -42,7 +42,7 @@ class DisplayManager {
 
     /// Activate HiDPI. Creates virtual display immediately, then calls completion
     /// on the main queue after mirror setup (non-blocking).
-    func activate(hdrMode: Bool, scaleFactor: Double = 2.0, refreshRate: Double = 120.0,
+    func activate(hdrMode: Bool, scaleFactor: Double = 2.0, refreshRate: Double = 60.0,
                   completion: @escaping (Bool) -> Void) {
         lastError = nil
         hdrModeActive = hdrMode
@@ -221,7 +221,7 @@ class DisplayManager {
     // MARK: - Virtual display
 
     private func createVirtualDisplay(target: DisplayTarget, hdrMode: Bool,
-                                      scaleFactor: Double = 2.0, refreshRate: Double = 120.0) -> CGVirtualDisplay? {
+                                      scaleFactor: Double = 2.0, refreshRate: Double = 60.0) -> CGVirtualDisplay? {
         // Mode dimensions determine the virtual display's pixel resolution.
         // With hiDPI=1 the compositor offers a 2x mode (half the mode pixels
         // as logical points). For super-sampling (scaleFactor > 2) we increase
@@ -237,8 +237,9 @@ class DisplayManager {
         let maxPxH = modeH * 2
         // The virtual display becomes the main display, and WindowServer
         // coalesces pointer events to the main display's refresh rate. A 60Hz
-        // panel would cap cursor sampling to 60Hz on every screen, so the
-        // default is 120Hz and the hardware mirror drops frames to the panel.
+        // panel caps cursor sampling to 60Hz on every screen. 120Hz lifts that
+        // but the mirror path composites the full surface every frame, so it
+        // roughly doubles GPU load and keeps it busy at idle. Default is 60Hz.
         //
         // Snap to an exact multiple of the panel rate: a 59.94Hz panel under a
         // hard 120Hz gets a duplicated or dropped frame every ~16s.

@@ -91,7 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var _hdrMode: Bool = true
     private var _scaleFactor: Double = 2.0
-    private var _refreshRate: Double = 120.0
+    private var _refreshRate: Double = 60.0
     private var _brightness: Float = 1.0
     private var _autoManageWithExternal: Bool = true
     /// Set when the user explicitly clicks Deactivate, so the auto-manager
@@ -592,7 +592,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // keeps cursor sampling at 120Hz even when the panel is 60Hz.
         let refreshMenu = NSMenu()
         for hz in Self.refreshOptions {
-            let label = hz == 120.0 ? "\(Int(hz)) Hz (smooth cursor)" : "\(Int(hz)) Hz"
+            let label = hz == 120.0 ? "\(Int(hz)) Hz (smooth cursor, high GPU load)" : "\(Int(hz)) Hz (default)"
             let item = NSMenuItem(title: label, action: #selector(setRefreshRate(_:)), keyEquivalent: "")
             item.target = self
             item.tag = Int(hz)
@@ -715,9 +715,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isActivating else { return }
         let newHz = Double(sender.tag)
         guard abs(newHz - refreshRate) > 0.5 else { return }
+        if newHz > 60.0 && !confirmHighRefreshRate(newHz) { return }
         print("setRefreshRate: \(Int(refreshRate))Hz -> \(Int(newHz))Hz")
         refreshRate = newHz
         if isActive { reactivate() } else { rebuildMenu() }
+    }
+
+    /// The mirror path composites the full 7680x4320 surface every frame, so
+    /// 120Hz roughly doubles WindowServer GPU load and keeps it busy at idle.
+    /// Make the user opt in.
+    private func confirmHighRefreshRate(_ hz: Double) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Switch to \(Int(hz)) Hz?"
+        alert.informativeText = "The virtual display is composited in full every frame. " +
+            "\(Int(hz)) Hz keeps the cursor sampling at \(Int(hz)) Hz on every screen but " +
+            "roughly doubles WindowServer GPU load and keeps the GPU busy at idle. " +
+            "The physical panel still outputs 60 Hz."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Use \(Int(hz)) Hz")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Format a scale factor for display, dropping unnecessary trailing zeros.
