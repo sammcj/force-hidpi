@@ -230,9 +230,13 @@ class DisplayManager {
         let modeH = UInt32((Double(target.height) * scaleFactor / 2.0).rounded())
         let maxPxW = modeW * 2  // 2x backing for HiDPI
         let maxPxH = modeH * 2
-        let hz = target.refreshRate > 0 ? target.refreshRate : 60.0
+        // The virtual display becomes the main display, and WindowServer
+        // coalesces pointer events to the main display's refresh rate. A 60Hz
+        // panel would cap cursor sampling to 60Hz on every screen, so declare
+        // 120Hz here and let the hardware mirror drop frames to the panel.
+        let hz = 120.0
 
-        log("  Virtual display mode: \(modeW)x\(modeH) (maxPx \(maxPxW)x\(maxPxH), scale \(scaleFactor)x)")
+        log("  Virtual display mode: \(modeW)x\(modeH)@\(Int(hz))Hz (maxPx \(maxPxW)x\(maxPxH), scale \(scaleFactor)x, panel \(Int(target.refreshRate))Hz)")
 
         let mode: CGVirtualDisplayMode
         if hdrMode {
