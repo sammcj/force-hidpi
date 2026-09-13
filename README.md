@@ -36,6 +36,7 @@ The default 2x creates a 7680x4320 render buffer for the 3840x2160 logical resol
 ### Quality features
 
 - **16-bit compositing** (default): Uses PQ (ST 2084) EOTF for 16-bit/64bpp compositing with a PQ-to-SDR gamma correction table applied via `CGSetDisplayTransferByTable`. Toggleable from the menu bar.
+- **120Hz virtual display** (default): The virtual display becomes the main display, and WindowServer coalesces pointer events to the main display's refresh rate. Inheriting a 60Hz panel's rate caps cursor sampling at 60Hz on every screen, including a 120Hz built-in panel. Declaring the virtual display at 120Hz keeps a 125Hz mouse sampling smoothly while the hardware mirror drops frames to the 60Hz panel. Switchable to 60Hz under Refresh Rate in the menu bar.
 - **Colour profile matching**: Compares ICC profiles between virtual and physical displays. If they differ, copies the physical display's profile to the virtual display via SkyLight API.
 - **Consistent display identity**: Uses the physical panel's vendor/product IDs and a fixed serial number so macOS preserves display arrangement between sessions.
 - **Hardware scaling**: The DCP's hardware scaler handles the downscale, not software.

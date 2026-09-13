@@ -87,6 +87,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var _hdrMode: Bool = true
     private var _scaleFactor: Double = 2.0
+    private var _refreshRate: Double = 120.0
     private var _brightness: Float = 1.0
     private var _autoManageWithExternal: Bool = true
     /// Set when the user explicitly clicks Deactivate, so the auto-manager
@@ -97,6 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var _brightnessDownCombo: HotKey.Combo = defaultBrightnessDown
 
     private static let scaleOptions: [Double] = [2.0, 2.25, 2.5, 3.0, 3.5, 4.0]
+    private static let refreshOptions: [Double] = [60.0, 120.0]
 
     private var hdrMode: Bool {
         get { _hdrMode }
@@ -106,6 +108,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var scaleFactor: Double {
         get { _scaleFactor }
         set { _scaleFactor = newValue; savePrefs() }
+    }
+
+    private var refreshRate: Double {
+        get { _refreshRate }
+        set { _refreshRate = newValue; savePrefs() }
     }
 
     private var brightnessLevel: Float {
@@ -135,6 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         else { return }
         if let v = dict["hdrMode"] as? Bool { _hdrMode = v }
         if let v = dict["scaleFactor"] as? Double, v >= 2.0 { _scaleFactor = v }
+        if let v = dict["refreshRate"] as? Double, Self.refreshOptions.contains(v) { _refreshRate = v }
         if let v = dict["brightness"] as? Double { _brightness = Float(max(0, min(1, v))) }
         if let v = dict["autoManageWithExternal"] as? Bool { _autoManageWithExternal = v }
         if let up = dict["brightnessUp"] as? [String: Any],
@@ -155,6 +163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let dict: [String: Any] = [
             "hdrMode": _hdrMode,
             "scaleFactor": _scaleFactor,
+            "refreshRate": _refreshRate,
             "brightness": Double(_brightness),
             "autoManageWithExternal": _autoManageWithExternal,
             "brightnessUp": [
@@ -554,6 +563,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         scaleItem.submenu = scaleMenu
         menu.addItem(scaleItem)
 
+        // Refresh rate submenu. The virtual display is the main display and
+        // WindowServer coalesces pointer events to its refresh rate, so 120Hz
+        // keeps cursor sampling at 120Hz even when the panel is 60Hz.
+        let refreshMenu = NSMenu()
+        for hz in Self.refreshOptions {
+            let label = hz == 120.0 ? "\(Int(hz)) Hz (smooth cursor)" : "\(Int(hz)) Hz"
+            let item = NSMenuItem(title: label, action: #selector(setRefreshRate(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(hz)
+            item.state = abs(refreshRate - hz) < 0.5 ? .on : .off
+            item.isEnabled = !isActivating
+            refreshMenu.addItem(item)
+        }
+        let refreshItem = NSMenuItem(title: "Refresh Rate", action: nil, keyEquivalent: "")
+        refreshItem.submenu = refreshMenu
+        menu.addItem(refreshItem)
+
         // Font smoothing submenu
         let fontMenu = NSMenu()
         let currentSmoothing = CFPreferencesCopyValue(
@@ -607,7 +633,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isActivating = true
         setStatusIcon(.activating)
         rebuildMenu()
-        manager.activate(hdrMode: hdrMode, scaleFactor: scaleFactor) { [weak self] success in
+        manager.activate(hdrMode: hdrMode, scaleFactor: scaleFactor,
+                         refreshRate: refreshRate) { [weak self] success in
             guard let self else { return }
             self.isActivating = false
             self.isActive = success
@@ -657,6 +684,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard abs(newScale - scaleFactor) > 0.01 else { return }
         print("setScale: \(Self.formatScale(scaleFactor)) -> \(Self.formatScale(newScale))")
         scaleFactor = newScale
+        if isActive { reactivate() } else { rebuildMenu() }
+    }
+
+    @objc private func setRefreshRate(_ sender: NSMenuItem) {
+        guard !isActivating else { return }
+        let newHz = Double(sender.tag)
+        guard abs(newHz - refreshRate) > 0.5 else { return }
+        print("setRefreshRate: \(Int(refreshRate))Hz -> \(Int(newHz))Hz")
+        refreshRate = newHz
         if isActive { reactivate() } else { rebuildMenu() }
     }
 

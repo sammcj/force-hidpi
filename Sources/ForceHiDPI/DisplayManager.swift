@@ -42,7 +42,8 @@ class DisplayManager {
 
     /// Activate HiDPI. Creates virtual display immediately, then calls completion
     /// on the main queue after mirror setup (non-blocking).
-    func activate(hdrMode: Bool, scaleFactor: Double = 2.0, completion: @escaping (Bool) -> Void) {
+    func activate(hdrMode: Bool, scaleFactor: Double = 2.0, refreshRate: Double = 120.0,
+                  completion: @escaping (Bool) -> Void) {
         lastError = nil
         hdrModeActive = hdrMode
 
@@ -57,7 +58,8 @@ class DisplayManager {
             "(0x\(String(target.vendorID, radix: 16)):0x\(String(target.productID, radix: 16))) " +
             "\(target.width)x\(target.height) @ \(Int(target.refreshRate))Hz")
 
-        guard let vd = createVirtualDisplay(target: target, hdrMode: hdrMode, scaleFactor: scaleFactor) else {
+        guard let vd = createVirtualDisplay(target: target, hdrMode: hdrMode,
+                                            scaleFactor: scaleFactor, refreshRate: refreshRate) else {
             lastError = "Virtual display creation failed"
             completion(false)
             return
@@ -216,7 +218,8 @@ class DisplayManager {
 
     // MARK: - Virtual display
 
-    private func createVirtualDisplay(target: DisplayTarget, hdrMode: Bool, scaleFactor: Double = 2.0) -> CGVirtualDisplay? {
+    private func createVirtualDisplay(target: DisplayTarget, hdrMode: Bool,
+                                      scaleFactor: Double = 2.0, refreshRate: Double = 120.0) -> CGVirtualDisplay? {
         // Mode dimensions determine the virtual display's pixel resolution.
         // With hiDPI=1 the compositor offers a 2x mode (half the mode pixels
         // as logical points). For super-sampling (scaleFactor > 2) we increase
@@ -232,9 +235,9 @@ class DisplayManager {
         let maxPxH = modeH * 2
         // The virtual display becomes the main display, and WindowServer
         // coalesces pointer events to the main display's refresh rate. A 60Hz
-        // panel would cap cursor sampling to 60Hz on every screen, so declare
-        // 120Hz here and let the hardware mirror drop frames to the panel.
-        let hz = 120.0
+        // panel would cap cursor sampling to 60Hz on every screen, so the
+        // default is 120Hz and the hardware mirror drops frames to the panel.
+        let hz = refreshRate
 
         log("  Virtual display mode: \(modeW)x\(modeH)@\(Int(hz))Hz (maxPx \(maxPxW)x\(maxPxH), scale \(scaleFactor)x, panel \(Int(target.refreshRate))Hz)")
 
