@@ -1,6 +1,10 @@
 import AppKit
 import Carbon.HIToolbox
 
+// launchd redirects stdout to a file, which makes it block-buffered, so log
+// lines only appear at exit. Line-buffer it so the log is readable live.
+setvbuf(stdout, nil, _IOLBF, 0)
+
 // Prevent duplicate instances via file lock
 let lockPath = "/tmp/force-hidpi.lock"
 let lockFD = open(lockPath, O_CREAT | O_RDWR, 0o644)
@@ -94,6 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// never re-activates over a deliberate choice. Cleared on manual Activate.
     private var manuallyDeactivated = false
     private var pendingSave: DispatchWorkItem?
+    private var pendingColourRematch: DispatchWorkItem?
     private var _brightnessUpCombo: HotKey.Combo = defaultBrightnessUp
     private var _brightnessDownCombo: HotKey.Combo = defaultBrightnessDown
 
@@ -243,6 +248,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             DistributedNotificationCenter.default().removeObserver(obs)
         }
         cancelTargetLoss()
+        pendingColourRematch?.cancel()
         manager.deactivate()
     }
 
@@ -250,7 +256,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleProfileChange() {
         guard isActive else { return }
-        manager.rematchColourProfile()
+        scheduleColourRematch()
+    }
+
+    /// ColorSync posts a profile notification per display and screen-parameter
+    /// changes arrive in bursts, so coalesce the rematch behind a short delay.
+    private func scheduleColourRematch() {
+        pendingColourRematch?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, isActive, !isActivating else { return }
+            manager.rematchColourProfile()
+        }
+        pendingColourRematch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     private func handleDisplayChange() {
@@ -340,10 +358,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// IORegistry paths shuffle across sleep/wake on some docks, so re-apply
     /// the profile and re-resolve the IOAVService for the (possibly new) target.
     private func reapplyDisplaySettings() {
-        manager.rematchColourProfile()
+        scheduleColourRematch()
         guard let target = manager.targetDisplay else { return }
-        brightness.invalidate()
-        _ = brightness.resolve(displayID: target.displayID)
+        brightness.resolveInBackground(displayID: target.displayID) { [weak self] found in
+            guard let self, isActive else { return }
+            // The service is only replaced on success, so a stale one after a
+            // dock shuffle stays until the next probe finds the new path.
+            if found, manager.targetDisplay?.displayID == target.displayID {
+                brightness.setBrightness(_brightness)
+            }
+        }
     }
 
     // MARK: - Target loss grace period

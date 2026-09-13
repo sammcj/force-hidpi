@@ -64,6 +64,33 @@ final class BrightnessController {
         return true
     }
 
+    /// Re-resolve without blocking the main thread. The IORegistry walk runs on
+    /// a utility queue and the current service keeps serving writes until a
+    /// replacement is found, so a slider drag in progress is not dropped.
+    /// Completion runs on the main queue with whether a service was found.
+    func resolveInBackground(displayID: CGDirectDisplayID, completion: @escaping (Bool) -> Void) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let candidates = Self.enumerateIORegistry()
+            var best: (entry: IORegEntry, score: Int)?
+            for candidate in candidates where candidate.service != nil {
+                let score = Self.matchScore(displayID: displayID, entry: candidate)
+                if best == nil || score > best!.score {
+                    best = (candidate, score)
+                }
+            }
+            let found = best.flatMap { $0.score > 0 ? $0.entry.service : nil }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let found {
+                    self.stateLock.lock()
+                    self.service = found
+                    self.stateLock.unlock()
+                }
+                completion(found != nil)
+            }
+        }
+    }
+
     func invalidate() {
         stateLock.lock()
         service = nil

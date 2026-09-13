@@ -56,7 +56,7 @@ class DisplayManager {
         targetDisplay = target
         log("Target: 0x\(String(target.displayID, radix: 16)) " +
             "(0x\(String(target.vendorID, radix: 16)):0x\(String(target.productID, radix: 16))) " +
-            "\(target.width)x\(target.height) @ \(Int(target.refreshRate))Hz")
+            "\(target.width)x\(target.height) @ \(String(format: "%.2f", target.refreshRate))Hz")
 
         guard let vd = createVirtualDisplay(target: target, hdrMode: hdrMode,
                                             scaleFactor: scaleFactor, refreshRate: refreshRate) else {
@@ -110,8 +110,10 @@ class DisplayManager {
 
         // Night Shift, True Tone, and display sleep/wake can overwrite the
         // gamma tables via CGSetDisplayTransferByTable. Re-apply PQ correction
-        // so the EOTF decode stays intact.
-        if hdrModeActive {
+        // so the EOTF decode stays intact. Every upload is a LUT swap on the
+        // main display that WindowServer renders as a visible hitch, so skip
+        // it when the table already in place is ours.
+        if hdrModeActive && !pqGammaCorrectionIsApplied(displayID: vdID) {
             applyPQGammaCorrection(displayID: vdID)
             log("  Re-applied PQ gamma correction after colour change")
         }
@@ -226,9 +228,9 @@ class DisplayManager {
         // the mode so the compositor renders at a higher resolution than the
         // physical display, and the mirror hardware-downscales to native.
         //
-        //   scaleFactor 2.0:  mode 3840x2160 -> 1920x1080@2x -> 1:1 to physical
-        //   scaleFactor 2.5:  mode 4800x2700 -> 2400x1350@2x -> 1.25:1 downscale
-        //   scaleFactor 4.0:  mode 7680x4320 -> 3840x2160@2x -> 2:1 downscale
+        //   scaleFactor 2.0:  mode 3840x2160 (logical) -> 7680x4320 render -> 2:1 downscale
+        //   scaleFactor 2.5:  mode 4800x2700 (logical) -> 9600x5400 render -> 2.5:1 downscale
+        //   scaleFactor 4.0:  mode 7680x4320 (logical) -> 15360x8640 render -> 4:1 downscale
         let modeW = UInt32((Double(target.width) * scaleFactor / 2.0).rounded())
         let modeH = UInt32((Double(target.height) * scaleFactor / 2.0).rounded())
         let maxPxW = modeW * 2  // 2x backing for HiDPI
@@ -237,9 +239,16 @@ class DisplayManager {
         // coalesces pointer events to the main display's refresh rate. A 60Hz
         // panel would cap cursor sampling to 60Hz on every screen, so the
         // default is 120Hz and the hardware mirror drops frames to the panel.
-        let hz = refreshRate
+        //
+        // Snap to an exact multiple of the panel rate: a 59.94Hz panel under a
+        // hard 120Hz gets a duplicated or dropped frame every ~16s.
+        let panelHz = target.refreshRate > 0 ? target.refreshRate : 60.0
+        let multiple = (refreshRate / panelHz).rounded()
+        let snapped = panelHz * multiple
+        let hz = multiple >= 1 && abs(snapped - refreshRate) < 1 ? snapped : refreshRate
 
-        log("  Virtual display mode: \(modeW)x\(modeH)@\(Int(hz))Hz (maxPx \(maxPxW)x\(maxPxH), scale \(scaleFactor)x, panel \(Int(target.refreshRate))Hz)")
+        log("  Virtual display mode: \(modeW)x\(modeH)@\(String(format: "%.2f", hz))Hz " +
+            "(maxPx \(maxPxW)x\(maxPxH), scale \(scaleFactor)x, panel \(String(format: "%.2f", panelHz))Hz)")
 
         let mode: CGVirtualDisplayMode
         if hdrMode {
@@ -431,8 +440,30 @@ class DisplayManager {
 
     // MARK: - PQ gamma correction
 
+    private static let pqTableSize: UInt32 = 256
+
+    /// True when the gamma table currently on the display is the PQ table we
+    /// uploaded. Readback can return a resampled table, so a size mismatch
+    /// counts as "not ours" and falls through to a re-apply.
+    private func pqGammaCorrectionIsApplied(displayID: CGDirectDisplayID) -> Bool {
+        let size = Int(Self.pqTableSize)
+        var red = [CGGammaValue](repeating: 0, count: size)
+        var green = [CGGammaValue](repeating: 0, count: size)
+        var blue = [CGGammaValue](repeating: 0, count: size)
+        var count: UInt32 = 0
+        let err = CGGetDisplayTransferByTable(displayID, Self.pqTableSize, &red, &green, &blue, &count)
+        guard err == .success, Int(count) == size else { return false }
+        let tolerance: CGGammaValue = 1.0 / 1024.0
+        return zip(red, Self.pqGammaTable).allSatisfy { abs($0 - $1) <= tolerance }
+    }
+
     private func applyPQGammaCorrection(displayID: CGDirectDisplayID) {
-        let size: UInt32 = 256
+        let table = Self.pqGammaTable
+        CGSetDisplayTransferByTable(displayID, Self.pqTableSize, table, table, table)
+    }
+
+    private static let pqGammaTable: [CGGammaValue] = {
+        let size = pqTableSize
         var table = [CGGammaValue](repeating: 0, count: Int(size))
 
         // ST 2084 (PQ) EOTF constants
@@ -456,7 +487,6 @@ class DisplayManager {
             let mapped = min(max(linear * sdrScale, 0), 1)
             table[i] = CGGammaValue(pow(mapped, 1.0 / 2.2))
         }
-
-        CGSetDisplayTransferByTable(displayID, size, table, table, table)
-    }
+        return table
+    }()
 }
