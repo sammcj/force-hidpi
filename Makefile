@@ -12,7 +12,7 @@ ifeq ($(INSTALL_DIR),)
 	NEEDS_SUDO = sudo
 endif
 
-.PHONY: help build build-debug release clean install uninstall start stop lint logs
+.PHONY: help build build-debug release clean install uninstall start stop lint logs version stamp-version
 .DEFAULT_GOAL := help
 
 help:
@@ -27,6 +27,8 @@ help:
 	@echo "  make logs           Show recent logs and crash reports"
 	@echo "  make lint           Lint and fix Swift sources"
 	@echo "  make clean          Remove build artifacts"
+	@echo "  make version V=X.Y.Z  Bump appVersion in main.swift and freeze CHANGELOG [Unreleased]"
+	@echo "  make stamp-version  Freeze CHANGELOG [Unreleased] at the current appVersion"
 
 build release:
 	swift build -c release
@@ -88,3 +90,19 @@ lint:
 clean:
 	swift package clean
 	rm -rf .build
+
+VERSION_FILE = Sources/ForceHiDPI/main.swift
+CURRENT_VERSION = $(shell /usr/bin/sed -nE 's/.*appVersion = "([^"]+)".*/\1/p' $(VERSION_FILE))
+
+# Freeze CHANGELOG [Unreleased] using the version currently in main.swift.
+# No-op if [Unreleased] is empty.
+stamp-version:
+	uv run scripts/version.py stamp --version "$(CURRENT_VERSION)" --changelog-only
+
+# Bump appVersion in main.swift and freeze CHANGELOG. Usage: make version V=1.5.0
+version:
+	@if [ -z "$(V)" ]; then echo "ERROR: pass V=X.Y.Z, e.g. make version V=1.5.0"; exit 1; fi
+	@if ! echo "$(V)" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$$'; then \
+		echo "ERROR: '$(V)' is not a valid semver string"; exit 1; fi
+	/usr/bin/sed -i '' -E 's/(appVersion = ")[^"]+(")/\1$(V)\2/' $(VERSION_FILE)
+	uv run scripts/version.py stamp --version "$(V)" --changelog-only

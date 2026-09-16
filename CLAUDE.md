@@ -24,7 +24,19 @@ When to increment:
 - **Minor** (1.x.0): New features, new menu options, non-breaking changes
 - **Major** (x.0.0): Breaking changes, API changes to CGVirtualDisplay usage, major rewrites
 
-You **MUST** update the version string in `main.swift` when you have completed making changes that warrant a version bump!
+You **MUST** bump the version when you have completed making changes that warrant it. Do it with `make version V=X.Y.Z`, which rewrites `appVersion` in `main.swift` and freezes the changelog. Do not edit `appVersion` by hand.
+
+## Changelog
+
+Log behaviour changes in CHANGELOG.md under [Unreleased], grouped by Added/Changed/Fixed/Removed.
+
+- One line each, under 15 words. What changed, not how it was built.
+- Skip trivia: wording, formatting, typos, no-behaviour refactors, test-only churn. Git history covers those.
+- Write more than one line only if a future agent couldn't recover the reasoning from the code.
+- Squash changes within the same version (do not add changes to changes).
+- No version numbers; release with `make version V=X.Y.Z` (or `make stamp-version` to freeze at the current version).
+- Keep `## Known Bugs` pinned above `## [Unreleased]`.
+- Truncate the oldest releases past 2000 lines.
 
 ## Build
 
