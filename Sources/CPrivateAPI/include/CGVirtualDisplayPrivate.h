@@ -10,10 +10,12 @@
 // linker against the IOKit framework; no dlopen required.
 typedef CFTypeRef IOAVService;
 extern IOAVService _Nullable IOAVServiceCreateWithService(CFAllocatorRef _Nullable allocator, io_service_t service);
-extern IOReturn IOAVServiceWriteI2C(IOAVService service, uint32_t chipAddress, uint32_t dataAddress, void *inputBuffer, uint32_t inputBufferSize);
+extern IOReturn IOAVServiceWriteI2C(IOAVService _Nonnull service, uint32_t chipAddress, uint32_t dataAddress, void * _Nullable inputBuffer, uint32_t inputBufferSize);
 
 // CoreDisplay helpers used to correlate a CGDirectDisplayID with an IORegistry entry.
 extern CFDictionaryRef _Nullable CoreDisplay_DisplayCreateInfoDictionary(CGDirectDisplayID display);
+
+NS_ASSUME_NONNULL_BEGIN
 
 @interface CGVirtualDisplayMode : NSObject
 - (instancetype)initWithWidth:(unsigned int)w height:(unsigned int)h
@@ -45,6 +47,9 @@ extern CFDictionaryRef _Nullable CoreDisplay_DisplayCreateInfoDictionary(CGDirec
 
 @interface CGVirtualDisplay : NSObject
 @property (readonly, nonatomic) unsigned int displayID;
-- (instancetype)initWithDescriptor:(CGVirtualDisplayDescriptor *)desc;
+// Returns nil when WindowServer refuses the descriptor.
+- (nullable instancetype)initWithDescriptor:(CGVirtualDisplayDescriptor *)desc;
 - (BOOL)applySettings:(CGVirtualDisplaySettings *)settings;
 @end
+
+NS_ASSUME_NONNULL_END
