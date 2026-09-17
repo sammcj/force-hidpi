@@ -76,6 +76,16 @@ make build-debug
 
 When run from a terminal, diagnostic output (quality info, ICC profiles, PPI) is printed to stdout.
 
+### Performance logging
+
+Toggle "Performance Logging" in the menu (or launch with `FORCE_HIDPI_PROFILE=1`) to sample WindowServer CPU/RSS, GPU utilisation and memory, battery power draw and thermal state every 5 seconds. Each sample is one JSON line in `~/Library/Logs/force-hidpi/perf-<timestamp>.jsonl`, tagged with the current `active`, `hdr`, `scale` and `hz` settings, so toggling the app on and off within one session gives you both sides of the comparison in one file.
+
+Leave the desktop idle for a few minutes per configuration. `ws_cpu` is a decaying average from `ps`, so discard the first minute after each toggle. `power_w` is only meaningful on battery.
+
+```bash
+duckdb -c "select active, hdr, scale, hz, round(avg(ws_cpu),1) ws_cpu, round(avg(gpu_util),1) gpu, round(avg(gpu_mem_mb)) gpu_mb, round(avg(power_w),1) w, count(*) n from read_json_auto('$HOME/Library/Logs/force-hidpi/perf-*.jsonl') where ws_cpu is not null group by all order by all"
+```
+
 ## Limitations
 
 - The process must remain running (it owns the virtual display lifecycle)

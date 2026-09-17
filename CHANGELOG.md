@@ -6,4 +6,10 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-17
+
+### Added
+
+- Optional "Performance Logging" menu toggle sampling WindowServer, GPU and power to JSONL
+
 ## [1.4.3]

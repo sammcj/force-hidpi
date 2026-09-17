@@ -34,7 +34,7 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    fileprivate static let appVersion = "1.4.3"
+    fileprivate static let appVersion = "1.5.0"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private let brightness = BrightnessController()
@@ -94,6 +94,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var _refreshRate: Double = 60.0
     private var _brightness: Float = 1.0
     private var _autoManageWithExternal: Bool = true
+    private var _perfLogging: Bool = false
+    private var profiler: PerfProfiler?
     /// Set when the user explicitly clicks Deactivate, so the auto-manager
     /// never re-activates over a deliberate choice. Cleared on manual Activate.
     private var manuallyDeactivated = false
@@ -130,6 +132,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         set { _autoManageWithExternal = newValue; savePrefs() }
     }
 
+    private var perfLogging: Bool {
+        get { _perfLogging }
+        set { _perfLogging = newValue; savePrefs(); syncProfiler() }
+    }
+
+    private var perfConfig: PerfProfiler.Config {
+        let panel = manager.targetDisplay.map {
+            "\($0.width)x\($0.height)@\($0.vendorID):\($0.productID)"
+        }
+        return PerfProfiler.Config(active: isActive, hdr: hdrMode, scale: scaleFactor,
+                                   hz: refreshRate, panel: panel)
+    }
+
+    /// Starts or stops the sampler to match the preference. Runtime state
+    /// changes reach it via `rebuildMenu`, which every state change already
+    /// passes through.
+    private func syncProfiler() {
+        if perfLogging {
+            if profiler == nil {
+                profiler = PerfProfiler(appVersion: Self.appVersion, config: perfConfig)
+            }
+            profiler?.start()
+        } else {
+            profiler?.stop()
+            profiler = nil
+        }
+    }
+
     var brightnessUpCombo: HotKey.Combo {
         get { _brightnessUpCombo }
         set { _brightnessUpCombo = newValue; savePrefs(); registerHotKeys() }
@@ -150,6 +180,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let v = dict["refreshRate"] as? Double, Self.refreshOptions.contains(v) { _refreshRate = v }
         if let v = dict["brightness"] as? Double { _brightness = Float(max(0, min(1, v))) }
         if let v = dict["autoManageWithExternal"] as? Bool { _autoManageWithExternal = v }
+        if let v = dict["perfLogging"] as? Bool { _perfLogging = v }
         if let up = dict["brightnessUp"] as? [String: Any],
            let keyCode = up["keyCode"] as? Int,
            let mods = up["modifiers"] as? Int {
@@ -171,6 +202,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "refreshRate": _refreshRate,
             "brightness": Double(_brightness),
             "autoManageWithExternal": _autoManageWithExternal,
+            "perfLogging": _perfLogging,
             "brightnessUp": [
                 "keyCode": Int(_brightnessUpCombo.keyCode),
                 "modifiers": Int(_brightnessUpCombo.modifiers)
@@ -188,9 +220,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         loadPrefs()
+        if ProcessInfo.processInfo.environment["FORCE_HIDPI_PROFILE"] == "1" { _perfLogging = true }
         registerHotKeys()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setStatusIcon(.inactive)
+        syncProfiler()
         rebuildMenu()
         activate()
 
@@ -249,6 +283,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         cancelTargetLoss()
         pendingColourRematch?.cancel()
+        profiler?.stop()
         manager.deactivate()
     }
 
@@ -499,6 +534,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu
 
     private func rebuildMenu() {
+        profiler?.update(perfConfig)
         let menu = NSMenu()
 
         // Status
@@ -631,6 +667,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         autoManage.state = autoManageWithExternal ? .on : .off
         menu.addItem(autoManage)
 
+        // Performance sampling to ~/Library/Logs/force-hidpi/perf-*.jsonl
+        let perfItem = NSMenuItem(title: "Performance Logging", action: #selector(togglePerfLogging),
+                                  keyEquivalent: "")
+        perfItem.target = self
+        perfItem.state = perfLogging ? .on : .off
+        perfItem.toolTip = "Samples WindowServer CPU, GPU and power every 5s to \(PerfProfiler.logDirectory.path)"
+        menu.addItem(perfItem)
+
         // Start at Login
         let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
         loginItem.target = self
@@ -693,6 +737,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleAutoManage() {
         autoManageWithExternal.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func togglePerfLogging() {
+        perfLogging.toggle()
         rebuildMenu()
     }
 
