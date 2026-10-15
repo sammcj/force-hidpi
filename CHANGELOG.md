@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-10-16
+
+### Added
+
+- Steam Remote Play streaming pauses HiDPI by default, including for existing users
+
 ## [1.6.0] - 2026-10-16
 
 ### Added

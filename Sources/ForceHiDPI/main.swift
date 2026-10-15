@@ -37,7 +37,7 @@ app.run()
 // MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    fileprivate static let appVersion = "1.6.0"
+    fileprivate static let appVersion = "1.6.1"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private let brightness = BrightnessController()
@@ -199,6 +199,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             appTriggers.apps = list.compactMap(TriggerApp.init(plist:))
         }
         if let v = dict["pauseForGames"] as? Bool { appTriggers.pauseForGames = v }
+        appTriggers.addNewDefaults(excluding: Set(dict["offeredDefaults"] as? [String] ?? []))
         if let up = dict["brightnessUp"] as? [String: Any],
            let keyCode = up["keyCode"] as? Int,
            let mods = up["modifiers"] as? Int {
@@ -223,6 +224,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "perfLogging": _perfLogging,
             "triggerApps": appTriggers.apps.map(\.plist),
             "pauseForGames": appTriggers.pauseForGames,
+            "offeredDefaults": AppTriggerWatcher.defaultApps.compactMap(\.bundleID),
             "brightnessUp": [
                 "keyCode": Int(_brightnessUpCombo.keyCode),
                 "modifiers": Int(_brightnessUpCombo.modifiers)

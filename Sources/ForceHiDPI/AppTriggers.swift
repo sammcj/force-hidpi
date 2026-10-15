@@ -49,8 +49,11 @@ struct TriggerApp: Equatable {
     }
 
     /// Steam, for one, runs from a different path than the one it's installed at.
+    /// Same rule as `matches`: Steam's helpers share its bundle path, so the
+    /// path alone would conflate Steam with its streaming client.
     func isSameApp(as other: TriggerApp) -> Bool {
-        path == other.path || (bundleID != nil && bundleID == other.bundleID)
+        if let bundleID, let otherID = other.bundleID { return bundleID == otherID }
+        return path == other.path
     }
 
     /// Bundle ID wins so a moved or updated app still matches.
@@ -79,8 +82,23 @@ final class AppTriggerWatcher: NSObject, NSMenuDelegate {
         steam?.enabled = false
         let steamLink = TriggerApp(name: "Steam Link", bundleID: "com.valvesoftware.SteamLink17",
                                    path: "/Applications/Steam Link.app")
-        return [steam, steamLink].compactMap { $0 }
+        // Steam's own Remote Play client window. Launch options don't apply
+        // to streamed games, as the game runs on the host.
+        let remotePlay = TriggerApp(name: "Steam Remote Play", bundleID: "com.valvesoftware.steam.streamingclient",
+                                    path: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+                                        "Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/streaming_client"
+                                    ).path)
+        return [steam, steamLink, remotePlay].compactMap { $0 }
     }()
+
+    /// Appends defaults added in a later version. `offered` lists default
+    /// bundle IDs the user has already had, so ones they removed stay removed.
+    func addNewDefaults(excluding offered: Set<String>) {
+        let new = Self.defaultApps.filter { app in
+            !offered.contains(app.bundleID ?? "") && !apps.contains { $0.isSameApp(as: app) }
+        }
+        if !new.isEmpty { apps += new }
+    }
 
     var apps: [TriggerApp] = defaultApps {
         didSet {

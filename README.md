@@ -91,14 +91,14 @@ duckdb -c "select active, hdr, scale, hz, round(avg(ws_cpu),1) ws_cpu, round(avg
 "Pause For Apps" turns HiDPI off while a matching app runs and back on 1 second after it quits. A relaunch within 10 seconds of resuming doesn't pause again until the 10 seconds are up.
 
 - **All Games** (on by default): any app whose `Info.plist` declares a `public.app-category.*games` category
-- **Listed apps**: tick to enable. Steam Link is enabled by default; Steam is listed but off, as it usually runs in the background
+- **Listed apps**: tick to enable. Steam Link and Steam Remote Play (Steam's streaming client) are enabled by default; Steam is listed but off, as it usually runs in the background
 - **Steam launch option**: app detection fires once the game process exists. To pause _before_ the game starts, use "Copy Steam Launch Option" and paste it into the game's Properties > Launch Options:
 
 ```
 "/Users/you/.local/bin/force-hidpi" --pause-while %command%
 ```
 
-The wrapper waits (up to 15 seconds) for HiDPI to turn off, then execs the game in its place, so the pause lasts exactly as long as the game runs. It works with any launcher that accepts a wrapper command, or from a shell. Only the launched process is tracked: if a game starts through its own launcher that hands off and exits, add the real game to the list instead.
+The wrapper waits (up to 15 seconds) for HiDPI to turn off, then execs the game in its place, so the pause lasts exactly as long as the game runs. It works with any launcher that accepts a wrapper command, or from a shell. Only the launched process is tracked: if a game starts through its own launcher that hands off and exits, add the real game to the list instead. Launch options don't apply to streamed games, which run on the host; the Steam Remote Play entry covers those.
 
 ## Limitations
 
