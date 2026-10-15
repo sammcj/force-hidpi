@@ -7,6 +7,9 @@ setvbuf(stdout, nil, _IOLBF, 0)
 
 // Prevent duplicate instances via file lock
 let lockPath = "/tmp/force-hidpi.lock"
+if CommandLine.arguments.dropFirst().first == PauseHold.flag {
+    runPauseWrapper(Array(CommandLine.arguments.dropFirst(2)), lockPath: lockPath)
+}
 let lockFD = open(lockPath, O_CREAT | O_RDWR, 0o644)
 if lockFD < 0 || flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
     fputs("force-hidpi: already running\n", stderr)
@@ -33,8 +36,8 @@ app.run()
 
 // MARK: - AppDelegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    fileprivate static let appVersion = "1.5.0"
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    fileprivate static let appVersion = "1.6.0"
     private var statusItem: NSStatusItem!
     private let manager = DisplayManager()
     private let brightness = BrightnessController()
@@ -99,6 +102,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set when the user explicitly clicks Deactivate, so the auto-manager
     /// never re-activates over a deliberate choice. Cleared on manual Activate.
     private var manuallyDeactivated = false
+    private let appTriggers = AppTriggerWatcher()
+    /// HiDPI was turned off because a listed app launched, so bring it back
+    /// when the app quits even if auto-activation is off.
+    private var suspendedForApp = false
+    /// A listed app launched mid-activation; suspend once it completes.
+    private var suspendWhenActivated = false
+    private var statusMenuOpen = false
+    /// The last listed app quit while the status menu was open.
+    private var releasePendingMenuClose = false
+    /// A display change arrived while the status menu was open.
+    private var statusItemResetPending = false
     private var pendingSave: DispatchWorkItem?
     private var pendingColourRematch: DispatchWorkItem?
     private var _brightnessUpCombo: HotKey.Combo = defaultBrightnessUp
@@ -181,6 +195,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let v = dict["brightness"] as? Double { _brightness = Float(max(0, min(1, v))) }
         if let v = dict["autoManageWithExternal"] as? Bool { _autoManageWithExternal = v }
         if let v = dict["perfLogging"] as? Bool { _perfLogging = v }
+        if let list = dict["triggerApps"] as? [[String: Any]] {
+            appTriggers.apps = list.compactMap(TriggerApp.init(plist:))
+        }
+        if let v = dict["pauseForGames"] as? Bool { appTriggers.pauseForGames = v }
         if let up = dict["brightnessUp"] as? [String: Any],
            let keyCode = up["keyCode"] as? Int,
            let mods = up["modifiers"] as? Int {
@@ -203,6 +221,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "brightness": Double(_brightness),
             "autoManageWithExternal": _autoManageWithExternal,
             "perfLogging": _perfLogging,
+            "triggerApps": appTriggers.apps.map(\.plist),
+            "pauseForGames": appTriggers.pauseForGames,
             "brightnessUp": [
                 "keyCode": Int(_brightnessUpCombo.keyCode),
                 "modifiers": Int(_brightnessUpCombo.modifiers)
@@ -225,8 +245,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setStatusIcon(.inactive)
         syncProfiler()
+        appTriggers.onSettingsChanged = { [weak self] in self?.savePrefs() }
+        appTriggers.onTriggerChange = { [weak self] running in self?.handleAppTrigger(running) }
+        appTriggers.onHoldRequested = { [weak self] in self?.handleHoldRequest() }
         rebuildMenu()
-        activate()
+        if appTriggers.isTriggered {
+            suspendedForApp = true
+        } else {
+            activate()
+        }
 
         // Watch for display connect/disconnect/sleep-wake
         displayObserver = NotificationCenter.default.addObserver(
@@ -328,8 +355,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // grace period rather than tearing down immediately.
                 beginTargetLoss()
             }
-        } else if !isActive && !inCooldown && autoManageWithExternal
-                    && !manuallyDeactivated && manager.findTarget() != nil {
+        } else if !isActive && !inCooldown && (autoManageWithExternal || suspendedForApp) && !manuallyDeactivated
+                    && !appTriggers.isTriggered && manager.findTarget() != nil {
             // External 4K display (re)appeared while inactive. Auto-reactivate,
             // but never override an explicit user Deactivate. The cooldown guard
             // stops a failed activation (which calls deactivate, posting another
@@ -337,8 +364,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             activate()
         }
         // Recreate the status item - display reconfiguration invalidates
-        // the cached screen coordinates and the menu appears in the wrong place
-        resetStatusItem()
+        // the cached screen coordinates and the menu appears in the wrong place.
+        // An app trigger can tear down with the menu open, and removing the
+        // status item under menu tracking crashes AppKit, so wait for close.
+        if statusMenuOpen {
+            statusItemResetPending = true
+        } else {
+            resetStatusItem()
+        }
     }
 
     /// Sleep, wake, lock and unlock all arm the widened grace period. Sleep and
@@ -483,6 +516,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return Self.targetLossGraceAfterWake
     }
 
+    // MARK: - App triggers
+
+    private func handleAppTrigger(_ running: Bool) {
+        if running {
+            if isActivating {
+                suspendWhenActivated = true
+            } else if isActive {
+                suspendForApp()
+            }
+            return
+        }
+        suspendWhenActivated = false
+        // Activating swaps the status item's menu, which is unsafe while it is
+        // open, e.g. right after Remove on a running app. Finish on close.
+        if statusMenuOpen {
+            releasePendingMenuClose = true
+            return
+        }
+        // `suspendedForApp` survives a missing panel (mid wake churn) so
+        // handleDisplayChange can still resume when it reappears.
+        if (suspendedForApp || autoManageWithExternal) && !isActive && !isActivating
+            && !manuallyDeactivated && manager.findTarget() != nil {
+            activate()
+        } else {
+            rebuildMenu()
+        }
+    }
+
+    /// A `--pause-while` wrapper is waiting to launch its game. Unlike an app
+    /// trigger this also overrides a manual Activate, since the user asked
+    /// for it per launch. Mid-activation, the ack follows the completion.
+    private func handleHoldRequest() {
+        if isActivating {
+            suspendWhenActivated = true
+            return
+        }
+        if isActive { suspendForApp() }
+        appTriggers.acknowledgeHolds()
+    }
+
+    /// Like a manual Deactivate, but resumable and without `manuallyDeactivated`.
+    /// The teardown posts a screen parameters change that rebuilds the status
+    /// item, so only the icon is touched here in case the menu is open.
+    private func suspendForApp() {
+        suspendedForApp = true
+        cancelTargetLoss()
+        isActive = false
+        appTriggers.noteTeardown()
+        manager.deactivate()
+        brightness.invalidate()
+        setStatusIcon(.inactive)
+    }
+
     private func resetStatusItem() {
         NSStatusBar.system.removeStatusItem(statusItem)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -549,6 +635,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 menu.addItem(withTitle: "HiDPI Active", action: nil, keyEquivalent: "").isEnabled = false
             }
+        } else if suspendedForApp, appTriggers.isTriggered, let name = appTriggers.runningAppName {
+            menu.addItem(withTitle: "Paused while \(name) is running", action: nil, keyEquivalent: "").isEnabled = false
         } else if let err = manager.lastError {
             menu.addItem(withTitle: err, action: nil, keyEquivalent: "").isEnabled = false
         } else {
@@ -666,6 +754,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         autoManage.target = self
         autoManage.state = autoManageWithExternal ? .on : .off
         menu.addItem(autoManage)
+        menu.addItem(appTriggers.makeMenuItem())
 
         // Performance sampling to ~/Library/Logs/force-hidpi/perf-*.jsonl
         let perfItem = NSMenuItem(title: "Performance Logging", action: #selector(togglePerfLogging),
@@ -691,12 +780,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         quit.target = self
         menu.addItem(quit)
 
+        menu.delegate = self
         statusItem.menu = menu
+    }
+
+    // Only the top-level status menu has this delegate. No identity check:
+    // a menu replaced while open still reports its close here.
+    func menuWillOpen(_ menu: NSMenu) {
+        statusMenuOpen = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        statusMenuOpen = false
+        let release = releasePendingMenuClose
+        let reset = statusItemResetPending
+        releasePendingMenuClose = false
+        statusItemResetPending = false
+        guard release || reset else { return }
+        // Let tracking fully unwind before the menu is swapped.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if reset { resetStatusItem() }
+            if release && !appTriggers.isTriggered { handleAppTrigger(false) }
+        }
     }
 
     // MARK: - Actions
 
     private func activate() {
+        suspendedForApp = false
         cancelTargetLoss()
         isActivating = true
         setStatusIcon(.activating)
@@ -707,6 +819,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.isActivating = false
             self.isActive = success
             self.activationCompletedAt = Date()
+            // The trigger may have ended mid-activation (game killed from
+            // Steam); suspending then would only cycle the displays again.
+            if self.suspendWhenActivated {
+                self.suspendWhenActivated = false
+                if self.appTriggers.isTriggered {
+                    self.suspendedForApp = true
+                    if success {
+                        self.suspendForApp()
+                        self.appTriggers.acknowledgeHolds()
+                        return
+                    }
+                    self.appTriggers.acknowledgeHolds()
+                }
+            }
             if success, let target = self.manager.targetDisplay {
                 if self.brightness.resolve(displayID: target.displayID) {
                     // Restore the last known brightness value to the display so
@@ -722,6 +848,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleActive() {
+        suspendedForApp = false
         if isActive {
             manuallyDeactivated = true
             cancelTargetLoss()
@@ -802,10 +929,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isActivating = true
         setStatusIcon(.activating)
         rebuildMenu()
+        appTriggers.noteTeardown()
         manager.deactivate()
         isActive = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            self?.activate()
+            guard let self else { return }
+            // A listed app launched while settling: stay down rather than
+            // build the virtual display only to tear it straight back down.
+            let stayDown = suspendWhenActivated && appTriggers.isTriggered
+            suspendWhenActivated = false
+            if stayDown {
+                isActivating = false
+                suspendedForApp = true
+                setStatusIcon(.inactive)
+                rebuildMenu()
+                appTriggers.acknowledgeHolds()
+                return
+            }
+            activate()
         }
     }
 

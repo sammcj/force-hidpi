@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-16
+
+### Added
+
+- "Pause For Apps" menu: HiDPI turns off while listed apps run, resumes after
+- Pauses for apps declaring a games category by default; Steam Link on, Steam listed but off
+- `--pause-while <command>` wrapper pauses HiDPI before launch; menu copies a Steam launch option
+
+### Fixed
+
+- Display changes while the menu is open no longer risk an AppKit crash
+
 ## [1.5.0] - 2026-09-17
 
 ### Added
